@@ -870,6 +870,21 @@ static void writeCombatState(json& state)
 
     // Active weapon info — use the weapon from the CURRENT hand
     Object* weapon = (currentHand == HAND_RIGHT) ? critterGetItem2(gDude) : critterGetItem1(gDude);
+    // Use correct hit modes based on which hand is active
+    int primaryHitMode, secondaryHitMode;
+    if (weapon != nullptr) {
+        if (currentHand == HAND_RIGHT) {
+            primaryHitMode = HIT_MODE_RIGHT_WEAPON_PRIMARY;
+            secondaryHitMode = HIT_MODE_RIGHT_WEAPON_SECONDARY;
+        } else {
+            primaryHitMode = HIT_MODE_LEFT_WEAPON_PRIMARY;
+            secondaryHitMode = HIT_MODE_LEFT_WEAPON_SECONDARY;
+        }
+    } else {
+        primaryHitMode = HIT_MODE_PUNCH;
+        secondaryHitMode = HIT_MODE_KICK;
+    }
+
     json activeWeapon;
     if (weapon != nullptr) {
         char* wName = itemGetName(weapon);
@@ -879,16 +894,16 @@ static void writeCombatState(json& state)
         json primary;
         int minDmg = 0, maxDmg = 0;
         weaponGetDamageMinMax(weapon, &minDmg, &maxDmg);
-        primary["ap_cost"] = weaponGetActionPointCost(gDude, HIT_MODE_RIGHT_WEAPON_PRIMARY, false);
+        primary["ap_cost"] = weaponGetActionPointCost(gDude, primaryHitMode, false);
         primary["damage_min"] = minDmg;
         primary["damage_max"] = maxDmg;
-        primary["range"] = weaponGetRange(gDude, HIT_MODE_RIGHT_WEAPON_PRIMARY);
+        primary["range"] = weaponGetRange(gDude, primaryHitMode);
         activeWeapon["primary"] = primary;
 
         // Secondary attack
         json secondary;
-        secondary["ap_cost"] = weaponGetActionPointCost(gDude, HIT_MODE_RIGHT_WEAPON_SECONDARY, false);
-        secondary["range"] = weaponGetRange(gDude, HIT_MODE_RIGHT_WEAPON_SECONDARY);
+        secondary["ap_cost"] = weaponGetActionPointCost(gDude, secondaryHitMode, false);
+        secondary["range"] = weaponGetRange(gDude, secondaryHitMode);
         activeWeapon["secondary"] = secondary;
     } else {
         // Unarmed
@@ -930,8 +945,8 @@ static void writeCombatState(json& state)
             h["hp"] = critterGetHitPoints(obj);
             h["max_hp"] = critterGetStat(obj, STAT_MAXIMUM_HIT_POINTS);
 
-            // Hit chances for each location
-            int hitMode = weapon ? HIT_MODE_RIGHT_WEAPON_PRIMARY : HIT_MODE_PUNCH;
+            // Hit chances for each location — use the active hand's hit mode
+            int hitMode = primaryHitMode;
             json hitChances;
             hitChances["uncalled"] = _determine_to_hit(gDude, obj, HIT_LOCATION_UNCALLED, hitMode);
             hitChances["torso"] = _determine_to_hit(gDude, obj, HIT_LOCATION_TORSO, hitMode);
@@ -965,7 +980,7 @@ static void writeDialogueState(json& state)
     if (gGameDialogSpeaker != nullptr) {
         char* speakerName = objectGetName(gGameDialogSpeaker);
         dialogue["speaker_name"] = safeString(speakerName);
-        dialogue["speaker_id"] = gGameDialogSpeaker->id;
+        dialogue["speaker_id"] = objectToUniqueId(gGameDialogSpeaker);
     }
 
     const char* replyText = agentGetDialogReplyText();

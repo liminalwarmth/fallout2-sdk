@@ -315,8 +315,8 @@ export class FalloutSDK {
         this.ipc.sendCommand({ type: "skill_sub", skill });
     }
 
-    async perkAdd(perk: string): Promise<void> {
-        this.ipc.sendCommand({ type: "perk_add", perk });
+    async perkAdd(perkId: number): Promise<void> {
+        this.ipc.sendCommand({ type: "perk_add", perk_id: perkId });
     }
 
     // --- Interface ---

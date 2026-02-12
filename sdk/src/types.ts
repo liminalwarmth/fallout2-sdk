@@ -689,7 +689,7 @@ export interface DropItemCommand {
 
 export interface GiveItemCommand {
     type: "give_item";
-    pid: number;
+    item_pid: number;
     quantity?: number;
 }
 
@@ -837,7 +837,7 @@ export interface SkillSubCommand {
 
 export interface PerkAddCommand {
     type: "perk_add";
-    perk: string;
+    perk_id: number;
 }
 
 // World map commands
@@ -855,7 +855,8 @@ export interface WorldmapEnterLocationCommand {
 // Navigation/debug commands
 export interface FindPathCommand {
     type: "find_path";
-    tile: number;
+    to: number;
+    from?: number;
 }
 
 export interface TileObjectsCommand {
@@ -865,7 +866,7 @@ export interface TileObjectsCommand {
 
 export interface FindItemCommand {
     type: "find_item";
-    name: string;
+    pid: number;
 }
 
 export interface ListAllItemsCommand {

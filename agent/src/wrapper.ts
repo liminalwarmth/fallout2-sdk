@@ -556,6 +556,11 @@ export class AgentWrapper {
     // --- Worldmap handling ---
 
     private async handleWorldmap(state: GameplayWorldmapState): Promise<void> {
+        // Decrement cooldown (also done in handleExploration, but we need it here too)
+        if (this.reEvalCooldown > 0) {
+            this.reEvalCooldown--;
+        }
+
         // If already walking, just wait
         if (state.worldmap.is_walking) {
             return;
