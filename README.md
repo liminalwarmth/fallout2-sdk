@@ -23,10 +23,10 @@ fallout2-sdk/
 │   ├── agent_bridge_internal.h  # Shared internals
 │   ├── agent_state.cc      # All state emission (character, map, combat, dialogue, etc.)
 │   └── agent_commands.cc   # All command handlers (50+ commands)
-├── sdk/                    # TypeScript SDK — async wrapper over file-based IPC
-├── agent/                  # Claude agent wrapper — strategist, executors, objectives
-├── scripts/                # Utility scripts (play.sh, temple_run.sh, etc.)
+├── scripts/                # Setup and test scripts
 ├── game/                   # Local Fallout 2 game data (NOT committed — see Setup)
+│   ├── agent_state.json    # Game state output (written every tick by bridge)
+│   └── agent_cmd.json      # Command input (read and consumed by bridge)
 ├── docs/                   # Architecture docs, technical spec, session journal
 └── CLAUDE.md               # Claude Code project instructions
 ```
@@ -37,7 +37,7 @@ fallout2-sdk/
 - **CMake** 3.13+
 - **C++17 compiler** (Clang on macOS, MSVC on Windows, GCC on Linux)
 - **SDL2** (bundled with the CE build by default)
-- **Node.js** 18+ (for TypeScript SDK and agent wrapper)
+- **Python 3** (for JSON state parsing in shell helpers)
 - **Git**
 
 ## Setup
@@ -154,27 +154,19 @@ The SDK modifies the Fallout 2 CE engine to add an **AI bridge layer** that:
   - Menu navigation: `main_menu`, `main_menu_select`, `char_selector_select`, `skip`
   - Debug: `find_path`, `tile_objects`, `find_item`, `teleport` (test mode only), `give_item` (test mode only)
 
-### TypeScript SDK (`sdk/`)
+### Claude Code Integration
 
-Async wrapper over the file-based IPC protocol with typed interfaces for all game states and commands:
+Claude Code interacts with the game via simple file I/O:
 
-```typescript
-import { FalloutSDK } from "@fallout2-sdk/core";
-const sdk = new FalloutSDK("./game");
-const state = sdk.getState();              // Read current game state
-await sdk.moveTo(15887);                   // Walk to tile
-await sdk.attack(targetId, "eyes");        // Attack with aimed shot
-await sdk.selectDialogue(2);               // Pick dialogue option
-await sdk.waitForIdle();                   // Wait for animation to finish
+```bash
+# Read game state
+python3 -c "import json; d=json.load(open('game/agent_state.json')); print(d['context'])"
+
+# Send a command (atomic write)
+echo '{"commands":[{"type":"move_to","tile":15887}]}' > game/agent_cmd.tmp && mv game/agent_cmd.tmp game/agent_cmd.json
 ```
 
-### Agent Wrapper (`agent/`)
-
-Claude-driven autonomous agent with objective-based planning:
-- **Strategist** — Claude API interface for map surveys, objective planning, dialogue choices, barter decisions
-- **Executors** — deterministic modules for combat (target/AP management), navigation (waypoints, doors), loot, interaction, world map
-- **Objective system** — priority queue with pending/active/completed/blocked states
-- **Memory** — per-map tracking of visited tiles, looted containers, NPC knowledge
+See `CLAUDE.md` for the full set of shell helper patterns.
 
 Key engine integration points:
 - **Ticker callback** — registered via the engine's ticker system for per-tick state emission and command reading

@@ -769,33 +769,10 @@ static void handleUseItemOn(const json& cmd)
                     gAgentLastCommandDebug = buf;
                     debugPrint("AgentBridge: %s\n", buf);
                 } else {
-                    // Final failsafe: if using an explosive on scenery and the script
-                    // didn't handle it, directly destroy the target and consume the item.
-                    // This handles the Temple Impenetrable Door whose script doesn't
-                    // cooperate with direct invocation.
-                    if ((itemPid == 85 || itemPid == 51) && PID_TYPE(target->pid) == OBJ_TYPE_SCENERY) {
-                        debugPrint("AgentBridge: use_item_on explosive failsafe: destroying target scenery\n");
-                        Rect dirtyRect;
-                        objectDestroy(target, &dirtyRect);
-                        tileWindowRefreshRect(&dirtyRect, gElevation);
-
-                        itemRemove(gDude, item, 1);
-                        _obj_destroy(item);
-
-                        int leftItemAction, rightItemAction;
-                        interfaceGetItemActions(&leftItemAction, &rightItemAction);
-                        interfaceUpdateItems(false, INTERFACE_ITEM_ACTION_DEFAULT, INTERFACE_ITEM_ACTION_DEFAULT);
-
-                        snprintf(buf, sizeof(buf), "use_item_on(explosive_destroy): pid=%d target destroyed",
-                            itemPid);
-                        gAgentLastCommandDebug = buf;
-                        debugPrint("AgentBridge: %s\n", buf);
-                    } else {
-                        snprintf(buf, sizeof(buf), "use_item_on(fallback): pid=%d target_sid=%d no_override",
-                            itemPid, target->sid);
-                        gAgentLastCommandDebug = buf;
-                        debugPrint("AgentBridge: %s\n", buf);
-                    }
+                    snprintf(buf, sizeof(buf), "use_item_on(fallback): pid=%d target_sid=%d no_override",
+                        itemPid, target->sid);
+                    gAgentLastCommandDebug = buf;
+                    debugPrint("AgentBridge: %s\n", buf);
                 }
 
                 scriptsExecMapUpdateProc();
@@ -1692,6 +1669,15 @@ static void handleMapTransition(const json& cmd)
     int map = cmd["map"].get<int>();
     int elevation = cmd["elevation"].get<int>();
     int tile = cmd["tile"].get<int>();
+
+    // Direct map transitions (map >= 0) require test mode — players can't
+    // teleport between maps.  map=-2 (world map entry) is a normal action.
+    if (map >= 0 && !gAgentTestMode) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "map_transition: BLOCKED — direct map transition (map=%d) requires test mode", map);
+        gAgentLastCommandDebug = buf;
+        return;
+    }
     int rotation = 0;
     if (cmd.contains("rotation") && cmd["rotation"].is_number_integer()) {
         rotation = cmd["rotation"].get<int>();

@@ -73,6 +73,31 @@ wait_for_not_context() {
     return 1
 }
 
+wait_for_context_prefix() {
+    local prefix="$1"
+    local timeout="${2:-30}"
+    local elapsed=0
+    echo "   Waiting for context prefix '$prefix' (timeout ${timeout}s)..."
+    while [ $elapsed -lt $timeout ]; do
+        local ctx=$(read_context)
+        if [[ "$ctx" == ${prefix}* ]]; then
+            echo "   Got context '$ctx' after ${elapsed}s"
+            return 0
+        fi
+        # If we're in a movie, skip it
+        if [ "$ctx" = "movie" ]; then
+            send_cmd '{"commands":[{"type":"skip"}]}'
+            sleep 1
+            elapsed=$((elapsed + 2))
+            continue
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+    done
+    echo "   TIMEOUT waiting for prefix '$prefix' (last context: $(read_context))"
+    return 1
+}
+
 echo "=== Character Creation → Gameplay Verification Test ==="
 echo "Game dir: $GAME_DIR"
 echo ""
@@ -232,7 +257,7 @@ echo ""
 
 # 8. Wait for gameplay and verify character
 echo "--- Phase 8: Verify Character in Gameplay ---"
-wait_for_context "gameplay" 30 || {
+wait_for_context_prefix "gameplay_" 30 || {
     echo "   Current context: $(read_context)"
     echo "   Full state:"
     read_state
@@ -246,7 +271,7 @@ echo "   GAMEPLAY CHARACTER STATE:"
 python3 -c "
 import json, sys
 state = json.load(open('$STATE_FILE'))
-assert state['context'] == 'gameplay', f\"Expected gameplay, got {state['context']}\"
+assert state['context'].startswith('gameplay_'), f\"Expected gameplay_*, got {state['context']}\"
 
 char = state.get('character', {})
 print(f'     Name: {char.get(\"name\")}')

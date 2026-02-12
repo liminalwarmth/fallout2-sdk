@@ -1,5 +1,45 @@
 # Session Journal
 
+## 2026-02-12: Repo Cleanup, Executor Shell, and Legitimate Temple Clear
+
+### Repo Cleanup
+- **Removed `agent/` directory** (17 TypeScript files, ~2,400 lines) — redundant Anthropic API wrapper that duplicates Claude Code's capabilities
+- **Removed `sdk/` directory** (5 TypeScript files, ~1,400 lines) — thin file IPC wrapper that Claude Code does natively with bash/python
+- **Removed `scripts/temple_run.sh`** (1,272 lines) and **`scripts/play.sh`** (293 lines) — deterministic autoplayer scripts replaced by Claude Code
+- **Updated CLAUDE.md**: Architecture from 3-layer (TypeScript SDK + Agent Wrapper) to 2-layer (Claude Code + Agent Bridge). Added Shell Helpers section. Fixed dependencies.
+- **Updated README.md**: Removed TypeScript sections, added Claude Code integration examples
+- **Fixed `scripts/test_character_creation.sh`**: `wait_for_context "gameplay"` → `wait_for_context_prefix "gameplay_"` to match sub-contexts
+
+### Executor Shell (`scripts/executor.sh`)
+Created tactical execution helper (~440 lines) for Claude Code to use during gameplay:
+- Core I/O: `send`, `cmd`, `cmds`, `field`, `py` (read state via python one-liners)
+- Waiting: `wait_idle`, `wait_context`, `wait_context_prefix`, `wait_tick_advance`
+- Combat: `do_combat` — full autonomous loop (move to enemy, attack, heal, end turn)
+- Navigation: `move_and_wait`, `use_object_and_wait`, `use_skill_and_wait`, `use_item_on_and_wait`
+- Loot: `loot_all` — open container, take all, close
+- Dialogue: `talk_and_choose` — talk to NPC with option sequence
+- State: `snapshot`, `objects_near`, `inventory_summary`
+
+### Combat Executor Bugs Fixed
+1. **Attack rejected — out of range**: Unarmed range=1, enemies at 6+ tiles. Added `combat_move` to close distance.
+2. **Infinite spin — no tick wait**: Commands processed but state re-read before engine ticked. Added `wait_tick_advance()`.
+3. **Stuck on distant enemy**: 27-hex enemy with blocked path. Added "too far" heuristic and move-failed AP check.
+
+### Temple of Trials — Legitimate Clear
+Character "Fist" (S8/P5/E8/C3/I5/A8/L3, Heavy Handed, Unarmed/Doctor/Lockpick):
+- ARTEMPLE → ARCAVES elev 0: Fought ants, lockpicked door (first try, skill 43%)
+- ARCAVES elev 1: Fought ants + scorpions, looted Pot at tile 19515 for Plastic Explosives
+- Used explosives on Impenetrable Door → "Raised Stone Plate"
+- ARCAVES elev 2: Talked to Cameron, accepted unarmed challenge, defeated him (yields at ~10 HP)
+- Exit door unlocked, walked to Village exit grid, vault suit movie played
+- Arrived in Arroyo Village (ARVILLAG.MAP) with 660 XP, 29/39 HP
+- Game saved to slot 0
+
+### Issues Noted
+- Long pathfinding (>20-25 tiles) fails silently — need intermediate waypoints
+- Door tile blocks pathfinding even when open — must navigate around/through via adjacent tiles
+- Cameron appears in hostile list during combat despite team=1 (script-triggered combat)
+
 ## 2026-02-11: Temple of Trials Game State & Command Coverage
 
 Implemented all 4 phases of the Temple of Trials plan in a single session:

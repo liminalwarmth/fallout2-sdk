@@ -1,8 +1,10 @@
 # Claude Plays Fallout 2: Implementation Specification (v4 — macOS)
 
+> **Note:** This spec was the original design document. The actual implementation uses **file-based IPC** (`agent_state.json`/`agent_cmd.json`) with **Claude Code as the agent** — not a TypeScript SDK or TCP sockets. The RS-SDK-inspired sections below are retained as historical design context. See `CLAUDE.md` for the current architecture.
+
 ## Project Overview
 
-Build an agent interface on top of **fallout2-ce** (the open-source C++ reimplementation of Fallout 2) that allows Claude to autonomously play through the full game. The design takes direct inspiration from **RS-SDK** (the RuneScape automation SDK built for Claude Code), adapting its architecture — structured game state extraction via a modified client, a TypeScript SDK with clean async APIs, agent documentation via `claude.md`, and an iterative `learnings/` directory — for a single-player turn-based RPG rather than a real-time MMO.
+Build an agent interface on top of **fallout2-ce** (the open-source C++ reimplementation of Fallout 2) that allows Claude to autonomously play through the full game. The original design took inspiration from **RS-SDK** (the RuneScape automation SDK built for Claude Code). The implemented architecture is simpler: a C++ agent bridge extracts game state as JSON files and accepts commands via JSON files, with Claude Code reading/writing those files directly.
 
 Claude plays as a character experiencing the game for the first time. It does not draw on any prior knowledge of Fallout 2 from its training data. It knows only what the game tells it, what it observes, and what it writes down in its own notes. Its moral compass begins with a single principle — the golden rule — and evolves organically through gameplay.
 
