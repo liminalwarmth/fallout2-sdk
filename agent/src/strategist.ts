@@ -136,8 +136,8 @@ export class Strategist {
         }
 
         return {
-            choice: parsed.choice as number ?? 0,
-            reasoning: parsed.reasoning as string ?? "",
+            choice: (parsed.choice ?? 0) as number,
+            reasoning: (parsed.reasoning ?? "") as string,
             notes: parsed.notes as string | undefined,
         };
     }
@@ -161,9 +161,9 @@ export class Strategist {
         }
 
         return {
-            action: (parsed.action as string ?? "cancel") as BarterAction["action"],
-            items_to_offer: (parsed.items_to_offer as BarterAction["items_to_offer"]) ?? [],
-            items_to_request: (parsed.items_to_request as BarterAction["items_to_request"]) ?? [],
+            action: ((parsed.action ?? "cancel") as string) as BarterAction["action"],
+            items_to_offer: (parsed.items_to_offer ?? []) as BarterAction["items_to_offer"],
+            items_to_request: (parsed.items_to_request ?? []) as BarterAction["items_to_request"],
             notes: parsed.notes as string | undefined,
         };
     }

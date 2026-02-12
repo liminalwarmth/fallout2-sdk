@@ -4,10 +4,6 @@ import type { GameState, Command } from "./types.js";
 export { FileIPC } from "./ipc.js";
 export type * from "./types.js";
 
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class FalloutSDK {
     private ipc: FileIPC;
 
@@ -183,7 +179,7 @@ export class FalloutSDK {
     }
 
     async selectDialogue(index: number): Promise<void> {
-        this.ipc.sendCommand({ type: "select_dialogue", option: index });
+        this.ipc.sendCommand({ type: "select_dialogue", index });
     }
 
     // --- Inventory ---

@@ -46,6 +46,15 @@ namespace fallout {
 std::string gAgentLastCommandDebug;
 std::string gAgentLookAtResult;
 
+// Safe wrapper for objectGetName — never returns nullptr
+static const char* safeName(Object* obj)
+{
+    if (obj == nullptr)
+        return "(null)";
+    char* name = objectGetName(obj);
+    return name ? name : "(unnamed)";
+}
+
 // --- Look-at capture callback ---
 // Used by _obj_examine_func to capture description text directly
 static std::string gLookAtCaptureBuffer;
@@ -418,6 +427,7 @@ static int gMoveWaypointCount = 0;
 static int gMoveWaypointIndex = 0;
 static bool gMoveIsRunning = false;
 static int gMoveElevation = 0; // elevation when waypoints were set
+static int gMoveMapIndex = -1; // map index when waypoints were set
 
 int agentGetMovementWaypointsRemaining()
 {
@@ -432,10 +442,10 @@ void agentProcessQueuedMovement()
     if (gMoveWaypointCount == 0 || gMoveWaypointIndex >= gMoveWaypointCount)
         return;
 
-    // Abort waypoints if elevation changed (e.g. map transition, exit grid)
-    if (gDude->elevation != gMoveElevation) {
+    // Abort waypoints if map or elevation changed (e.g. map transition, exit grid)
+    if (gDude->elevation != gMoveElevation || mapGetCurrentMap() != gMoveMapIndex) {
         gMoveWaypointCount = 0;
-        debugPrint("AgentBridge: movement aborted — elevation changed\n");
+        debugPrint("AgentBridge: movement aborted — map/elevation changed\n");
         return;
     }
 
@@ -520,6 +530,7 @@ static void handleMoveTo(const json& cmd, bool run)
         gMoveWaypointIndex = 0;
         gMoveIsRunning = run;
         gMoveElevation = gDude->elevation;
+        gMoveMapIndex = mapGetCurrentMap();
 
         // Start first segment immediately
         agentProcessQueuedMovement();
@@ -588,7 +599,7 @@ static void handleUseObject(const json& cmd)
 
     _action_use_an_object(gDude, target);
     char buf[128];
-    snprintf(buf, sizeof(buf), "use_object: id=%llu name=%s", (unsigned long long)objId, objectGetName(target));
+    snprintf(buf, sizeof(buf), "use_object: id=%llu name=%s", (unsigned long long)objId, safeName(target));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: use_object on %llu\n", (unsigned long long)objId);
 }
@@ -614,7 +625,7 @@ static void handlePickUp(const json& cmd)
 
     actionPickUp(gDude, target);
     char buf[128];
-    snprintf(buf, sizeof(buf), "pick_up: id=%llu name=%s", (unsigned long long)objId, objectGetName(target));
+    snprintf(buf, sizeof(buf), "pick_up: id=%llu name=%s", (unsigned long long)objId, safeName(target));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: pick_up on %llu\n", (unsigned long long)objId);
 }
@@ -685,7 +696,7 @@ static void handleTalkTo(const json& cmd)
 
     actionTalk(gDude, target);
     char buf[128];
-    snprintf(buf, sizeof(buf), "talk_to: id=%llu name=%s", (unsigned long long)objId, objectGetName(target));
+    snprintf(buf, sizeof(buf), "talk_to: id=%llu name=%s", (unsigned long long)objId, safeName(target));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: talk_to %llu\n", (unsigned long long)objId);
 }
@@ -746,7 +757,6 @@ static void handleUseItemOn(const json& cmd)
                 Script* script;
                 if (scriptGetScript(target->sid, &script) != -1 && script->scriptOverrides) {
                     // Script handled it — remove the item from inventory
-                    int flags = item->flags & OBJECT_IN_ANY_HAND;
                     itemRemove(gDude, item, 1);
                     _obj_destroy(item);
 
@@ -1104,22 +1114,25 @@ static void handleDropItem(const json& cmd)
         return;
     }
 
-    // Create a copy on the ground at the player's tile
-    Object* dropped = nullptr;
-    int rc = objectCreateWithPid(&dropped, itemPid);
-    if (rc != 0 || dropped == nullptr) {
-        gAgentLastCommandDebug = "drop_item: failed to create ground object";
+    // Remove item from inventory (does NOT destroy the object)
+    int rc = itemRemove(gDude, item, quantity);
+    if (rc != 0) {
+        gAgentLastCommandDebug = "drop_item: itemRemove failed rc=" + std::to_string(rc);
         return;
     }
 
-    objectSetLocation(dropped, gDude->tile, gDude->elevation, nullptr);
-
-    // Transfer quantity from inventory
-    rc = itemRemove(gDude, item, quantity);
+    // Place the removed item object on the ground at player's tile
+    rc = _obj_connect(item, gDude->tile, gDude->elevation, nullptr);
+    if (rc != 0) {
+        // Failed to place — try to put it back in inventory
+        itemAdd(gDude, item, quantity);
+        gAgentLastCommandDebug = "drop_item: _obj_connect failed, item returned to inventory";
+        return;
+    }
 
     char buf[128];
-    snprintf(buf, sizeof(buf), "drop_item: pid=%d qty=%d rc=%d tile=%d",
-        itemPid, quantity, rc, gDude->tile);
+    snprintf(buf, sizeof(buf), "drop_item: pid=%d qty=%d tile=%d",
+        itemPid, quantity, gDude->tile);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
 }
@@ -1870,8 +1883,9 @@ static void handleLootTakeAll()
 
     int taken = 0;
     Inventory* inv = &target->data.inventory;
+    int prevLength = inv->length;
     // Take items in reverse order since removing shifts the array
-    while (inv->length > 0) {
+    while (inv->length > 0 && taken < 100) {
         InventoryItem* invItem = &inv->items[inv->length - 1];
         Object* item = invItem->item;
         int qty = invItem->quantity;
@@ -1881,6 +1895,11 @@ static void handleLootTakeAll()
         int rc = itemMove(target, gDude, item, qty);
         if (rc != 0)
             break;
+
+        // Safety: ensure inventory actually shrank
+        if (inv->length >= prevLength)
+            break;
+        prevLength = inv->length;
         taken++;
     }
 

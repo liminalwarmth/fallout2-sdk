@@ -39,10 +39,10 @@ export class NavigationExecutor {
             return { status: "working", message: `Moving... (${player.movement_waypoints_remaining} waypoints remaining)` };
         }
 
-        // Check if we're stuck (same tile after starting movement)
-        if (this.movementStarted && player.tile === this.lastTile) {
+        // Check if we're stuck (same tile after starting movement, not animating)
+        if (this.movementStarted && player.tile === this.lastTile && !player.animation_busy) {
             this.stuckCount++;
-            if (this.stuckCount >= 3) {
+            if (this.stuckCount >= 5) {
                 this.resetStuck();
                 // Check if there's a door blocking the way
                 const blockingDoor = this.findBlockingDoor(state, targetTile);
@@ -61,7 +61,7 @@ export class NavigationExecutor {
         memory.visitTile(player.tile);
 
         // Send run_to command
-        log(`Running toward tile ${targetTile} (dist: ~${Math.abs(targetTile - player.tile)} tiles from current ${player.tile})`);
+        log(`Running toward tile ${targetTile} from current ${player.tile}`);
         await sdk.runTo(targetTile);
         await sleep(200);
 

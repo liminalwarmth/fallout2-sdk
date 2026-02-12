@@ -204,7 +204,12 @@ export class AgentWrapper {
         if (ctx === "gameplay_loot") {
             if (this.lootHandled) return;
             this.lootHandled = true;
-            await this.loot.handleLootScreen(state as GameplayLootState);
+            try {
+                await this.loot.handleLootScreen(state as GameplayLootState);
+            } catch (err) {
+                this.log(`Loot handler error: ${err}`);
+                this.lootHandled = false; // Allow retry
+            }
             return;
         }
 
@@ -469,7 +474,9 @@ export class AgentWrapper {
         if (!dialogue || dialogue.options.length === 0) return;
 
         // Guard: don't call Claude again if we already responded to this exact dialogue text
-        const replyKey = `${dialogue.speaker_name}:${dialogue.reply_text}`;
+        // Include options hash so repeated lines with different options are handled
+        const optionsHash = dialogue.options.map(o => o.text).join("|");
+        const replyKey = `${dialogue.speaker_name}:${dialogue.reply_text}:${optionsHash}`;
         if (replyKey === this.lastDialogueReply) return;
         this.lastDialogueReply = replyKey;
 
@@ -505,7 +512,15 @@ export class AgentWrapper {
         if (this.barterHandled) return;
         this.barterHandled = true;
 
-        const action = await this.strategist.handleBarter(state);
+        let action;
+        try {
+            action = await this.strategist.handleBarter(state);
+        } catch (err) {
+            this.log(`Barter strategist error: ${err}`);
+            this.barterHandled = false; // Allow retry
+            await this.sdk.barterCancel();
+            return;
+        }
 
         if (!action || action.action === "cancel") {
             this.log("Canceling barter");

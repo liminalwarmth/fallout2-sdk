@@ -49,9 +49,8 @@ export class LootExecutor {
             return { status: "done", message: "Container already looted" };
         }
 
-        // Find the container in current objects
-        const container = state.objects.scenery.find((s) => s.id === objectId)
-            ?? state.objects.ground_items.find((i) => i.id === objectId);
+        // Find the container in scenery (containers are scenery objects, not ground items)
+        const container = state.objects.scenery.find((s) => s.id === objectId);
 
         if (!container) {
             return { status: "blocked", reason: `Container ${objectId} not found in current objects` };

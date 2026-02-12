@@ -9,7 +9,7 @@ export interface BaseState {
     mouse: { x: number; y: number };
     screen: { width: number; height: number };
     context: string;
-    test_mode?: boolean;
+    test_mode: boolean;
     player_dead?: boolean;
     last_command_debug?: string;
     look_at_result?: string;
@@ -764,7 +764,7 @@ export interface ToggleSneakCommand {
 // Dialogue commands
 export interface SelectDialogueCommand {
     type: "select_dialogue";
-    option: number;
+    index: number;
 }
 
 // Container/loot commands
