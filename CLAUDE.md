@@ -210,7 +210,7 @@ Source with `source scripts/executor.sh` to get high-level gameplay helpers:
 |----------|-------------|
 | `do_combat [timeout] [heal%]` | Full combat loop with wall-clock timeout (default 60s) and failure detection |
 | `exit_through <dest\|any>` | Walk onto exit grids to trigger natural map transitions (no cheating) |
-| `arm_and_detonate <id> [pid] <safe_tile>` | Full explosive workflow: walk adjacent, arm, flee, wait for detonation |
+| `arm_and_detonate <id> <safe_tile> [pid] [timer]` | Full explosive workflow: walk adjacent, arm, flee, wait for detonation |
 | `explore_area [max_dist]` | Loot all containers and pick up ground items within range |
 | `examine_object <id>` | Look at an object and report the result |
 | `check_inventory_for <keyword>` | Search inventory by keyword |

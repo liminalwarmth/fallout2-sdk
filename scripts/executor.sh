@@ -229,11 +229,14 @@ wait_tick_advance() {
 # ─── Movement ─────────────────────────────────────────────────────────
 
 move_and_wait() {
-    # Move to tile, wait for arrival. Returns 0 on success.
+    # Move to tile, wait for arrival. Returns 0 on success, 1 on timeout.
     local tile="$1" mode="${2:-run_to}"
     cmd "{\"type\":\"$mode\",\"tile\":$tile}"
     sleep 0.3
-    wait_idle
+    if ! wait_idle; then
+        echo "WARN: move_and_wait timed out moving to tile $tile" >&2
+        return 1
+    fi
     # Check if we actually arrived near the target
     local cur=$(field "player.tile")
     echo "Moved to tile $cur (target was $tile)"
@@ -293,16 +296,13 @@ print(json.dumps({
     'n_hp': n.get('hp', 0) if n else 0,
 }, separators=(',',':')))
 ")
-        # Parse all fields from one JSON blob
+        # Parse all fields from one JSON blob (shlex.quote to prevent injection)
         local ap hp max_hp n_alive n_id n_dist n_tile n_name n_hp free_move
         eval $(echo "$info" | python3 -c "
-import json, sys
+import json, sys, shlex
 d = json.load(sys.stdin)
 for k,v in d.items():
-    if isinstance(v, str):
-        print(f\"{k}='{v}'\")
-    else:
-        print(f'{k}={v}')
+    print(f'{k}={shlex.quote(str(v))}')
 ")
 
         # No hostiles? End turn to exit
@@ -481,16 +481,17 @@ for e in exits:
 arm_and_detonate() {
     # Full explosive workflow as a player would do it:
     #   1. Walk adjacent to target
-    #   2. Arm explosive with short timer
+    #   2. Arm explosive on target (arm_explosive command)
     #   3. Run away from blast radius
     #   4. Wait for detonation
     #   5. Report result
     #
+    # Usage: arm_and_detonate <target_id> <safe_tile> [explosive_pid] [timer_ticks]
     # Args: $1 = target object id
-    #       $2 = explosive pid (85=Plastic Explosives, 51=Dynamite)
-    #       $3 = safe tile to run to (should be 6+ hexes away)
+    #       $2 = safe tile to run to (should be 6+ hexes away)
+    #       $3 = explosive pid (default 85=Plastic Explosives, 51=Dynamite)
     #       $4 = timer ticks (default 100 = ~10 seconds)
-    local target_id="$1" explosive_pid="${2:-85}" safe_tile="$3" timer="${4:-100}"
+    local target_id="$1" safe_tile="$2" explosive_pid="${3:-85}" timer="${4:-100}"
 
     echo "=== ARM_AND_DETONATE: target=$target_id explosive=pid$explosive_pid ==="
 
@@ -529,9 +530,9 @@ else:
     sleep 0.5
     wait_idle 30
 
-    # Step 3: Arm the explosive (use_skill traps on the explosive item)
+    # Step 3: Arm the explosive on target (uses Traps skill via engine)
     echo "  Arming explosive (pid=$explosive_pid, timer=$timer ticks)..."
-    cmd "{\"type\":\"use_item_on\",\"item_pid\":$explosive_pid,\"object_id\":$target_id}"
+    cmd "{\"type\":\"arm_explosive\",\"item_pid\":$explosive_pid,\"object_id\":$target_id,\"seconds\":$((timer / 10))}"
     sleep 1
     wait_tick_advance 10
 
@@ -953,7 +954,7 @@ echo "  WAIT:       wait_idle, wait_context, wait_context_prefix, wait_tick_adva
 echo "  MOVE:       move_and_wait"
 echo "  COMBAT:     do_combat [timeout_secs] [heal_pct]"
 echo "  EXIT:       exit_through <dest_name|any> [max_attempts]"
-echo "  EXPLOSIVE:  arm_and_detonate <target_id> [explosive_pid] <safe_tile> [timer]"
+echo "  EXPLOSIVE:  arm_and_detonate <target_id> <safe_tile> [explosive_pid] [timer]"
 echo "  EXPLORE:    explore_area [max_dist], examine_object <id>, check_inventory_for <keyword>"
 echo "  LOOT:       loot_all <id>"
 echo "  INTERACT:   use_object_and_wait, use_skill_and_wait, use_item_on_and_wait, talk_and_choose"
