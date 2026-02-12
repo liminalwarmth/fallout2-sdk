@@ -890,13 +890,13 @@ game_log() {
     local hp=$(py "ds=d.get('character',{}).get('derived_stats',{}); print(f\"{ds.get('current_hp','?')}/{ds.get('max_hp','?')}\")" 2>/dev/null || echo "?/?")
     local level=$(field "character.level" 2>/dev/null || echo "?")
 
-    cat >> "$LOG_FILE" << EOF
-
-## [$timestamp] $map — $ctx
-HP: $hp | Level: $level | Tile: $tile
-$text
----
-EOF
+    {
+        echo ""
+        echo "## [$timestamp] $map — $ctx"
+        echo "HP: $hp | Level: $level | Tile: $tile"
+        echo "$text"
+        echo "---"
+    } >> "$LOG_FILE"
     echo "Logged to game_log.md"
 }
 
@@ -907,11 +907,11 @@ recall() {
 
     echo "=== RECALL: '$keyword' ==="
 
-    # Search knowledge files
+    # Search knowledge files (use -F for literal string match)
     if [ -d "$KNOWLEDGE_DIR" ]; then
         for f in "$KNOWLEDGE_DIR"/*.md; do
             [ -f "$f" ] || continue
-            local matches=$(grep -i -n "$keyword" "$f" 2>/dev/null)
+            local matches=$(grep -iF -n "$keyword" "$f" 2>/dev/null)
             if [ -n "$matches" ]; then
                 echo "--- $(basename "$f") ---"
                 echo "$matches"
@@ -921,7 +921,7 @@ recall() {
 
     # Search game log (last 20 matches with context)
     if [ -f "$LOG_FILE" ]; then
-        local log_matches=$(grep -i -B2 -A3 "$keyword" "$LOG_FILE" 2>/dev/null | tail -60)
+        local log_matches=$(grep -iF -B2 -A3 "$keyword" "$LOG_FILE" 2>/dev/null | tail -60)
         if [ -n "$log_matches" ]; then
             echo "--- game_log.md ---"
             echo "$log_matches"

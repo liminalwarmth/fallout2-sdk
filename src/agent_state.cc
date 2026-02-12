@@ -618,7 +618,13 @@ static void writeInventoryState(json& state)
             ws["damage_type"] = damageTypeToString(weaponGetDamageType(nullptr, item));
             ws["ap_cost_primary"] = weaponGetPrimaryActionPointCost(item);
             ws["ap_cost_secondary"] = weaponGetSecondaryActionPointCost(item);
-            ws["range"] = weaponGetRange(gDude, HIT_MODE_RIGHT_WEAPON_PRIMARY);
+            // Read range from proto directly — weaponGetRange() uses the critter's
+            // equipped weapon, not the item being inspected.
+            Proto* wProto = nullptr;
+            if (protoGetProto(item->pid, &wProto) == 0 && wProto != nullptr) {
+                ws["range_primary"] = wProto->item.data.weapon.maxRange1;
+                ws["range_secondary"] = wProto->item.data.weapon.maxRange2;
+            }
             ws["min_strength"] = weaponGetMinStrengthRequired(item);
             int caliber = ammoGetCaliber(item);
             if (caliber > 0) {
@@ -1118,19 +1124,21 @@ static void writeCombatState(json& state)
     combat["hostiles"] = hostiles;
     combat["pending_attacks"] = getPendingAttackCount();
 
-    // Turn order
+    // Turn order — emit ALL combatants (including dead) so indices match
+    // current_combatant_index which is the raw _list_com value.
     int combatantCount = agentGetCombatantCount();
     if (combatantCount > 0) {
         json turnOrder = json::array();
         for (int i = 0; i < combatantCount; i++) {
             Object* combatant = agentGetCombatant(i);
-            if (combatant == nullptr || critterIsDead(combatant))
+            if (combatant == nullptr)
                 continue;
             json entry;
             entry["id"] = objectToUniqueId(combatant);
             char* cName = objectGetName(combatant);
             entry["name"] = safeString(cName);
             entry["is_player"] = (combatant == gDude);
+            entry["dead"] = critterIsDead(combatant);
             turnOrder.push_back(entry);
         }
         combat["turn_order"] = turnOrder;
