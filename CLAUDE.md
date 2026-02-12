@@ -217,6 +217,16 @@ When making changes to the agent bridge (new commands, new state fields, engine 
 2. README.md — the Architecture section's state emission and command lists
 3. Memory files — record any new gotchas or patterns in auto memory
 
+## Code Review with Codex
+
+Use OpenAI Codex CLI (installed at `/opt/homebrew/bin/codex`, model `gpt-5.3-codex`) for a second-opinion code review on significant changes. Run after committing:
+
+```bash
+codex exec "Review the git diff of the last N commits (git diff HEAD~N..HEAD) for bugs, logic errors, and issues. Report any problems found."
+```
+
+This catches cross-layer contract mismatches (e.g., SDK type fields not matching C++ bridge expectations) that single-perspective review often misses.
+
 ## Session Journal
 
 See `docs/journal.md` for a log of what was done in each session.
