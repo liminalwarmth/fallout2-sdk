@@ -1,0 +1,3 @@
+[submodule "engine/fallout2-ce"]
+	path = engine/fallout2-ce
+	url = https://github.com/alexbatalov/fallout2-ce.git

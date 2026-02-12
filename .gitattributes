@@ -1,0 +1,5 @@
+# Prevent accidental commits of large game data files
+*.dat binary -diff
+*.acm binary -diff
+*.mve binary -diff
+*.frm binary -diff

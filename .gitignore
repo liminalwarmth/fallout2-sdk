@@ -1,0 +1,56 @@
+# =============================================================================
+# Fallout 2 Game Data (NEVER commit — copyrighted material)
+# =============================================================================
+
+# Game data directory (local copy of Fallout 2 files)
+game/
+
+# Common Fallout 2 data files (catch-all in case they end up elsewhere)
+*.dat
+!data/worldmap.dat
+*.acm
+*.mve
+*.rix
+*.SAV
+*.sav
+
+# Fallout 2 game executables
+fallout2.exe
+fallout2.ico
+
+# GOG/Steam installer artifacts
+*.dmg
+*.exe
+goggame.*
+unins*
+gfw_high.ico
+Support.ico
+
+# =============================================================================
+# Local SDK configuration (user-specific paths)
+# =============================================================================
+sdk.cfg
+.env
+
+# =============================================================================
+# Build artifacts
+# =============================================================================
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.app
+
+# =============================================================================
+# IDE / Editor
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

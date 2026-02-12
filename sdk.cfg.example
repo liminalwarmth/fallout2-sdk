@@ -1,0 +1,24 @@
+# fallout2-sdk configuration
+# Copy this file to sdk.cfg and update the path below.
+#
+# Point FALLOUT2_DIR at your Fallout 2 installation directory.
+# This is the folder containing master.dat, critter.dat, and patch000.dat.
+#
+# macOS (GOG):
+#   Locate "Fallout 2.app" in Applications or wherever you installed it.
+#   The game files are inside the Wineskin wrapper at:
+#     Fallout 2.app/Contents/Resources/game/Fallout 2.app/Contents/Resources/drive_c/Program Files/GOG.com/Fallout 2
+#
+#   Or, if you already ran the setup script, use the local copy:
+#     FALLOUT2_DIR=./game
+#
+# Windows (GOG):
+#   FALLOUT2_DIR=C:\GOG Games\Fallout 2
+#
+# Windows (Steam):
+#   FALLOUT2_DIR=C:\Program Files (x86)\Steam\steamapps\common\Fallout 2
+#
+# Linux (GOG via Wine/Proton):
+#   FALLOUT2_DIR=~/.wine/drive_c/GOG Games/Fallout 2
+
+FALLOUT2_DIR=./game
