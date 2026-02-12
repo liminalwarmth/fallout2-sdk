@@ -4,28 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-fallout2-sdk enables Claude to autonomously play Fallout 2 by instrumenting the [Fallout 2 Community Edition](https://github.com/alexbatalov/fallout2-ce) open-source engine. The architecture follows the RS-SDK pattern: a C++ agent bridge inside the engine extracts structured game state and accepts commands, a TypeScript SDK provides clean async APIs over TCP, and Claude makes live decisions via API calls.
+fallout2-sdk enables Claude Code to autonomously play Fallout 2 by instrumenting the [Fallout 2 Community Edition](https://github.com/alexbatalov/fallout2-ce) open-source engine. Claude Code acts as the strategic brain — reading game state, reasoning about objectives, and issuing commands — while the C++ agent bridge handles engine integration.
 
-The full technical specification is in `docs/fallout2-sdk-technical-spec.md`.
+The full technical specification is in `docs/fallout2-sdk-technical-spec.md` (note: some sections describe the original RS-SDK-inspired design; the actual architecture is file-based IPC as described below).
 
 ## Architecture
 
 ```
-Claude API
-    ↓
-Agent Wrapper (TypeScript)
-    ↓ JSON over TCP (port 7800)
+Claude Code (CLI)
+    ↓ reads game/agent_state.json
+    ↓ writes game/agent_cmd.json
 Agent Bridge (C++ module in fallout2-ce)
     ↓
 fallout2-ce Engine + SDL2
 ```
 
-**Three layers:**
+**Two layers:**
 1. **Agent Bridge** (C++, in engine) — hooks into engine decision points (combat turns, dialogue, movement), serializes game state to JSON, translates incoming commands to engine calls. Files: `agent_bridge.h/cc`, `agent_state.cc`, `agent_commands.cc`
-2. **TypeScript SDK** — async wrapper around TCP socket protocol (`moveTo()`, `attack()`, `selectDialogue()`, etc.)
-3. **Agent Wrapper** — manages Claude API calls, maintains `learnings/` directory and moral compass state
+2. **Claude Code** (the agent) — reads `game/agent_state.json` for game state, writes `game/agent_cmd.json` to issue commands. Uses bash/python for file I/O. No separate SDK or wrapper needed.
 
-**Engine modification strategy:** fallout2-ce is a git submodule at `engine/fallout2-ce/`. SDK modifications live in `src/` as patches applied on top, not as direct edits to the submodule. Minimal engine changes are made when necessary (e.g., dialogue accessor functions in `game_dialog.cc/h`). Key engine integration points: main loop hook (`game.cc`), input injection (`input.cc`), combat system (`combat.cc`), dialogue system (`game_dialog.cc`), world map (`worldmap.cc`).
+**Engine modification strategy:** fallout2-ce is a git submodule at `engine/fallout2-ce/`. Bridge modifications live in `src/` as patches applied on top, not as direct edits to the submodule. Minimal engine changes are made when necessary (e.g., dialogue accessor functions in `game_dialog.cc/h`). Key engine integration points: main loop hook (`game.cc`), input injection (`input.cc`), combat system (`combat.cc`), dialogue system (`game_dialog.cc`), world map (`worldmap.cc`).
 
 ## Build Commands
 
@@ -71,9 +69,11 @@ Follow these conventions for any C++ code in `src/`.
 
 - `engine/fallout2-ce/` — upstream engine submodule (do not commit changes here directly)
 - `engine/fallout2-ce/src/` — ~264 C++ source files comprising the full engine
-- `src/` — SDK engine modifications (patches on top of CE)
+- `src/` — agent bridge engine modifications (patches on top of CE)
 - `scripts/` — setup and utility scripts
-- `game/` — local Fallout 2 game data (git-ignored, ~500 MB)
+- `game/` — local Fallout 2 game data (git-ignored, ~500 MB), also where `agent_state.json` and `agent_cmd.json` live at runtime
+- `game/knowledge/` — persistent gameplay knowledge files (locations, characters, quests, strategies, items, world)
+- `game/game_log.md` — append-only decision/action log (search with grep, never load fully)
 - `docs/` — architecture docs and technical spec
 
 ## Important Engine Source Files
@@ -115,9 +115,18 @@ Active development — the agent bridge is implemented and supports:
 - **Movie skip**: `skip` command to bypass intro/transition movies; `ddraw.ini` with `SkipOpeningMovies=1` skips intro movies on launch
 - **Test mode**: `set_test_mode` command to enable/disable cheat commands (`teleport`, `give_item`). Defaults to OFF. State emits `test_mode` flag.
 - **Combat camera**: Engine mod — camera centers on each combatant at start of their turn (enemies, party members, player)
+- **Detailed item stats**: Weapon stats (damage, AP cost, range, strength req, ammo), armor stats (AC, DR/DT per damage type), ammo stats (caliber, modifiers), item descriptions for all inventory items
+- **Combat turn order**: Full combatant list with turn_order array, current_combatant_index, combat_round counter
+- **Character resistances**: poison_resistance, radiation_resistance, damage_resistance (7 types), damage_threshold (7 types), age, gender
+- **Kill counts**: Per-type kill tracking (Man, Radscorpion, Rat, etc.)
+- **Perk descriptions**: Full description text for all active perks in gameplay state
+- **Difficulty settings**: game_difficulty and combat_difficulty (easy/normal/hard) in state
+- **Hit mode names**: Human-readable attack mode names in combat and inventory state
+- **Object descriptions**: Proto descriptions for critters, ground items, and scenery (when different from name)
+- **Knowledge system**: Persistent gameplay knowledge in `game/knowledge/` (locations, characters, quests, strategies, items, world) with searchable decision log in `game/game_log.md`
 - **Attack pre-validation**: `_combat_check_bad_shot()` rejects attacks with clear errors (no ammo, out of range, not enough AP, etc.)
 
-The agent bridge has traveled to Klamath, executed barter trades with NPCs, recruited Sulik, and tested ranged combat with ammo tracking. All major gameplay systems are functional. The Temple of Trials needs to be re-cleared legitimately (the dynamite puzzle was bypassed with teleport).
+The Temple of Trials has been fully cleared legitimately by Claude Code (character creation, 3 dungeon levels, combat, lockpicking, explosive puzzle, Cameron's unarmed test). The agent bridge has traveled to Klamath, executed barter trades with NPCs, recruited Sulik, and tested ranged combat with ammo tracking. All major gameplay systems are functional.
 
 ## Testing
 
@@ -168,8 +177,8 @@ When adding new state enrichment or commands, always verify them end-to-end in t
 | `engine/fallout2-ce/src/game_dialog.cc` | Added 6 accessor implementations (`agentGetDialog*`, `agentGetBarter*`) |
 | `engine/fallout2-ce/src/display_monitor.h` | Added 2 accessor declarations for message log reading |
 | `engine/fallout2-ce/src/display_monitor.cc` | Added `agentDisplayMonitorGetLineCount/GetLine` implementations |
-| `engine/fallout2-ce/src/combat.h` | Added `extern int _combat_free_move` |
-| `engine/fallout2-ce/src/combat.cc` | Removed `static` from `_combat_free_move` |
+| `engine/fallout2-ce/src/combat.h` | Added `extern int _combat_free_move`, 3 turn order accessor declarations |
+| `engine/fallout2-ce/src/combat.cc` | Removed `static` from `_combat_free_move`, added `agentGetCombatantCount/GetCombatant/GetCurrentCombatantIndex` |
 | `engine/fallout2-ce/src/loadsave.cc` | Added `agentQuickSave()`/`agentQuickLoad()` functions |
 | `engine/fallout2-ce/src/loadsave.h` | Added declarations for `agentQuickSave()`/`agentQuickLoad()`/`agentSaveToSlot()`/`agentLoadFromSlot()` |
 | `engine/fallout2-ce/src/pipboy.h` | Added 12 accessor declarations for quest/holodisk data |
@@ -186,12 +195,42 @@ When adding new state enrichment or commands, always verify them end-to-end in t
 **Barter:** `barter_offer`, `barter_remove_offer`, `barter_request`, `barter_remove_request`, `barter_confirm`, `barter_talk`, `barter_cancel`
 **Level-up:** `skill_add`, `skill_sub`, `perk_add`
 **Interface:** `switch_hand`, `cycle_attack_mode`, `center_camera`, `rest`, `pip_boy`, `character_screen`, `inventory_open`, `skilldex`
-**Navigation:** `map_transition`, `teleport`, `find_path`, `tile_objects`, `worldmap_travel`, `worldmap_enter_location`
+**Navigation:** `map_transition` (map=-2 only without test mode), `teleport` (test mode), `find_path`, `tile_objects`, `worldmap_travel`, `worldmap_enter_location`
 **Containers:** `open_container`, `loot_take`, `loot_take_all`, `loot_close`
 **Save/Load:** `quicksave`, `quickload`, `save_slot`, `load_slot` (direct engine API, no UI)
 **Character creation:** `set_special`, `select_traits`, `tag_skills`, `set_name`, `finish_character_creation`, `adjust_stat`, `toggle_trait`, `toggle_skill_tag`, `editor_done`
 **Raw input:** `mouse_move`, `mouse_click`, `input_event`, `skip` (escape key for movies)
 **Menu:** `main_menu`, `main_menu_select`, `char_selector_select`
+
+### Executor Functions (`scripts/executor.sh`)
+
+Source with `source scripts/executor.sh` to get high-level gameplay helpers:
+
+| Function | Description |
+|----------|-------------|
+| `do_combat [timeout] [heal%]` | Full combat loop with wall-clock timeout (default 60s) and failure detection |
+| `exit_through <dest\|any>` | Walk onto exit grids to trigger natural map transitions (no cheating) |
+| `arm_and_detonate <id> [pid] <safe_tile>` | Full explosive workflow: walk adjacent, arm, flee, wait for detonation |
+| `explore_area [max_dist]` | Loot all containers and pick up ground items within range |
+| `examine_object <id>` | Look at an object and report the result |
+| `check_inventory_for <keyword>` | Search inventory by keyword |
+| `move_and_wait <tile>` | Move to tile, wait for arrival |
+| `loot_all <id>` | Open container, take all, close |
+| `talk_and_choose <id> <opt1> ...` | Talk to NPC with dialogue option sequence |
+| `snapshot` | Compact state summary |
+| `objects_near` | Nearby objects for planning |
+| `inventory_summary` | Full inventory listing |
+| `game_log <text>` | Append timestamped entry to game log with auto game state header |
+| `recall <keyword>` | Search all knowledge files and game log for keyword |
+| `note <category> <text>` | Append text to a knowledge file (locations/characters/quests/strategies/items/world) |
+
+### Information Boundaries & Fair Play
+
+- **No metagaming**: The agent must explore, loot, examine, and reason from in-game clues — not assume hidden knowledge from previous playthroughs
+- **No cheat commands in normal play**: `teleport`, `give_item`, and `map_transition` (map>=0) require test mode
+- **Explosives must be armed properly**: Use `arm_explosive` through the engine's explosion system, not direct object destruction
+- **Exit grids must be walked onto**: Use `exit_through` to naturally trigger transitions, not forced `map_transition`
+- **General gameplay knowledge is OK**: Reference `docs/gameplay-guide.md` for mechanics (how skills work, combat strategy, etc.)
 
 ## Important Gotchas
 
@@ -204,11 +243,90 @@ When adding new state enrichment or commands, always verify them end-to-end in t
 - **Command JSON format**: Commands MUST be wrapped in `{"commands":[...]}` array. Bare `{"type":"..."}` objects are silently ignored — `processCommands()` checks `doc.contains("commands")` and returns if missing.
 - **Quest data lazy loading**: Quest/holodisk data only loads when the Pip-Boy is first opened (`questInit()` called inside `pipboyOpen()`). Use `agentInitQuestData()` to force-load for state emission.
 - **World map entry**: Use `map_transition` with `map=-2` to enter the world map (triggers `wmWorldMap()` in `map.cc`). World map area IDs: 0=Arroyo, 1=Den, 2=Klamath, 3=Modoc, 4=Vault City, 5=Gecko, etc.
+- **map_transition gated by test mode**: Direct map transitions (`map >= 0`) now require test mode, since players can't teleport between maps. Only `map=-2` (world map entry) is always allowed.
+- **Explosives require arm_explosive, not use_item_on**: The old failsafe that directly destroyed scenery when using explosives has been removed. `use_item_on` with explosives will return `no_override`. Use `arm_explosive` (via the Traps skill) to properly arm, place, and detonate explosives through the engine's normal explosion system.
 - **mainmenu.cc recompilation**: After modifying bridge globals (like `gAgentMainMenuAction`), `mainmenu.cc` may use stale object files. Run `touch ../src/mainmenu.cc` before building to force recompilation.
 - **Barter confirm is direct**: `barter_confirm` uses direct `itemMoveAll()` instead of key injection because the barter UI loop's `inputGetInput()` doesn't consume events enqueued from our ticker. The implementation replicates `_barter_compute_value` formula.
 - **Items don't survive map_transition**: Items added via `give_item`/`objectCreateWithPid` become corrupted "Scroll Blocker" after `map_transition`. Always give items AFTER arriving at the destination map.
 - **Intro movies and tick freezing**: During intro movie playback (`gameMoviePlay`), the ticker fires from `inputGetInput()` but tick stays at 1. Use `ddraw.ini` with `SkipOpeningMovies=1` to bypass. For in-game movies, `skip` command works.
 - **Load game from main menu**: Use `main_menu` action `load_game` (sets `gAgentMainMenuAction=2`), then `input_event` with `key_code=13` (Enter) to confirm the first save slot in the load dialog.
+
+## Shell Helpers for Game Interaction
+
+Claude Code interacts with the game via file-based IPC. These shell patterns are the standard way to read state and send commands:
+
+```bash
+GAME_DIR="/Users/alexis.radcliff/fallout2-sdk/game"
+STATE_FILE="$GAME_DIR/agent_state.json"
+CMD_FILE="$GAME_DIR/agent_cmd.json"
+CMD_TMP="$GAME_DIR/agent_cmd.tmp"
+```
+
+### Send a command
+
+Commands MUST be wrapped in a `{"commands":[...]}` array. Use atomic write (write to tmp, then rename) to avoid partial reads:
+
+```bash
+# Send a single command
+echo '{"commands":[{"type":"move_to","tile":15887}]}' > "$CMD_TMP" && mv "$CMD_TMP" "$CMD_FILE"
+
+# Send multiple commands in one batch
+echo '{"commands":[
+  {"type":"equip_item","item_pid":7,"hand":"right"},
+  {"type":"switch_hand"}
+]}' > "$CMD_TMP" && mv "$CMD_TMP" "$CMD_FILE"
+```
+
+### Read state fields
+
+```bash
+# Read a dotted field path from agent_state.json
+python3 -c "
+import json
+with open('$STATE_FILE') as f:
+    d = json.load(f)
+val = d
+for key in 'player.tile'.split('.'):
+    val = val.get(key) if isinstance(val, dict) else None
+print(val if val is not None else 'null')
+"
+
+# Read full state as formatted JSON
+python3 -m json.tool "$STATE_FILE"
+
+# Read current context
+python3 -c "import json; print(json.load(open('$STATE_FILE')).get('context','unknown'))"
+```
+
+### Wait for a context
+
+```bash
+# Wait for a specific context (with timeout)
+for i in $(seq 1 60); do
+    ctx=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('context',''))" 2>/dev/null)
+    if [ "$ctx" = "gameplay_exploration" ]; then break; fi
+    sleep 0.5
+done
+
+# Wait for any gameplay_* context
+for i in $(seq 1 60); do
+    ctx=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('context',''))" 2>/dev/null)
+    if [[ "$ctx" == gameplay_* ]]; then break; fi
+    sleep 0.5
+done
+```
+
+### Dismiss stuck options menu
+
+After skipping movies, escape keys can leak into gameplay and open the options menu. Check and dismiss:
+
+```bash
+gm=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('game_mode',0))" 2>/dev/null)
+if [ "$gm" = "8" ] || [ "$gm" = "24" ]; then
+    echo '{"commands":[{"type":"key_press","key":"escape"}]}' > "$CMD_TMP" && mv "$CMD_TMP" "$CMD_FILE"
+    sleep 1
+fi
+```
 
 ## Documentation Sync
 
@@ -231,8 +349,41 @@ This catches cross-layer contract mismatches (e.g., SDK type fields not matching
 
 See `docs/journal.md` for a log of what was done in each session.
 
+## Knowledge Management
+
+Claude maintains persistent gameplay knowledge in `game/knowledge/` and a decision log in `game/game_log.md`.
+
+### When to Take Notes
+- **After exploring a new map**: Record layout, NPCs, exits, containers found -> `locations.md`
+- **After meeting an NPC**: Record name, role, key dialogue, quests -> `characters.md`
+- **After receiving a quest or clue**: Record objectives, hints, strategy -> `quests.md`
+- **After combat**: Record what worked, enemy weaknesses, HP/ammo spent -> `strategies.md`
+- **After finding notable items**: Record what, where, possible uses -> `items.md`
+- **After learning world lore**: Record factions, events, politics -> `world.md`
+- **At every major decision point**: Log the decision + reasoning -> `game_log.md`
+
+### How to Take Notes
+- Use `source scripts/executor.sh && note <category> "<text>"`
+- Update EXISTING entries rather than duplicating -- merge new info with old
+- Keep knowledge files under 150 lines by consolidating
+- Always include tags in game log entries for searchability
+
+### How to Search
+- Use `/game-recall <keyword>` (or `source scripts/executor.sh && recall "<keyword>"`)
+- Read a specific knowledge file when you need full context on a topic
+- NEVER load the full game_log.md -- always grep/search it
+
+### File Locations
+- `game/knowledge/locations.md` -- maps, exits, features
+- `game/knowledge/characters.md` -- NPCs, dialogue, quests
+- `game/knowledge/quests.md` -- objectives, clues, progress
+- `game/knowledge/strategies.md` -- combat, skills, tactics
+- `game/knowledge/items.md` -- notable items, equipment, keys
+- `game/knowledge/world.md` -- factions, lore, economy
+- `game/game_log.md` -- decision/action log (append-only, search-only)
+
 ## Dependencies
 
 - CMake 3.13+, C++17 compiler, SDL2 (bundled by default via `FALLOUT_VENDORED` CMake option)
 - nlohmann/json (fetched via CMake FetchContent for JSON serialization)
-- Node.js or Bun (for future TypeScript SDK/agent wrapper)
+- Python 3 (for shell helper scripts that parse JSON state)

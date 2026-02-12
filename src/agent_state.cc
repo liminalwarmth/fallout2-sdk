@@ -40,6 +40,8 @@
 #include "game_vars.h"
 #include "pipboy.h"
 #include "scripts.h"
+#include "settings.h"
+#include "game_config.h"
 
 namespace fallout {
 
@@ -147,6 +149,33 @@ static const char* damageTypeToString(int type)
     case DAMAGE_TYPE_ELECTRICAL: return "electrical";
     case DAMAGE_TYPE_EMP: return "emp";
     case DAMAGE_TYPE_EXPLOSION: return "explosion";
+    default: return "unknown";
+    }
+}
+
+static const char* hitModeToString(int hitMode)
+{
+    switch (hitMode) {
+    case HIT_MODE_LEFT_WEAPON_PRIMARY: return "left_primary";
+    case HIT_MODE_LEFT_WEAPON_SECONDARY: return "left_secondary";
+    case HIT_MODE_RIGHT_WEAPON_PRIMARY: return "right_primary";
+    case HIT_MODE_RIGHT_WEAPON_SECONDARY: return "right_secondary";
+    case HIT_MODE_PUNCH: return "punch";
+    case HIT_MODE_KICK: return "kick";
+    case HIT_MODE_LEFT_WEAPON_RELOAD: return "left_reload";
+    case HIT_MODE_RIGHT_WEAPON_RELOAD: return "right_reload";
+    case HIT_MODE_STRONG_PUNCH: return "strong_punch";
+    case HIT_MODE_HAMMER_PUNCH: return "hammer_punch";
+    case HIT_MODE_HAYMAKER: return "haymaker";
+    case HIT_MODE_JAB: return "jab";
+    case HIT_MODE_PALM_STRIKE: return "palm_strike";
+    case HIT_MODE_PIERCING_STRIKE: return "piercing_strike";
+    case HIT_MODE_STRONG_KICK: return "strong_kick";
+    case HIT_MODE_SNAP_KICK: return "snap_kick";
+    case HIT_MODE_POWER_KICK: return "power_kick";
+    case HIT_MODE_HIP_KICK: return "hip_kick";
+    case HIT_MODE_HOOK_KICK: return "hook_kick";
+    case HIT_MODE_PIERCING_KICK: return "piercing_kick";
     default: return "unknown";
     }
 }
@@ -381,7 +410,32 @@ static void writeCharacterStats(json& state)
     derived["sequence"] = critterGetStat(gDude, STAT_SEQUENCE);
     derived["healing_rate"] = critterGetStat(gDude, STAT_HEALING_RATE);
     derived["critical_chance"] = critterGetStat(gDude, STAT_CRITICAL_CHANCE);
+    derived["poison_resistance"] = critterGetStat(gDude, STAT_POISON_RESISTANCE);
+    derived["radiation_resistance"] = critterGetStat(gDude, STAT_RADIATION_RESISTANCE);
+
+    // Damage resistance (7 types)
+    {
+        json dr;
+        for (int i = 0; i < DAMAGE_TYPE_COUNT; i++) {
+            dr[damageTypeToString(i)] = critterGetStat(gDude, STAT_DAMAGE_RESISTANCE + i);
+        }
+        derived["damage_resistance"] = dr;
+    }
+
+    // Damage threshold (7 types)
+    {
+        json dt;
+        for (int i = 0; i < DAMAGE_TYPE_COUNT; i++) {
+            dt[damageTypeToString(i)] = critterGetStat(gDude, STAT_DAMAGE_THRESHOLD + i);
+        }
+        derived["damage_threshold"] = dt;
+    }
+
     character["derived_stats"] = derived;
+
+    // Age and gender
+    character["age"] = critterGetStat(gDude, STAT_AGE);
+    character["gender"] = (critterGetStat(gDude, STAT_GENDER) == GENDER_MALE) ? "male" : "female";
 
     int trait1, trait2;
     traitsGetSelected(&trait1, &trait2);
@@ -413,7 +467,7 @@ static void writeCharacterStats(json& state)
     character["unspent_skill_points"] = pcGetStat(PC_STAT_UNSPENT_SKILL_POINTS);
     character["can_level_up"] = dudeHasState(DUDE_STATE_LEVEL_UP_AVAILABLE);
 
-    // Active perks
+    // Active perks (with descriptions)
     json perks = json::array();
     for (int i = 0; i < PERK_COUNT; i++) {
         int rank = perkGetRank(gDude, i);
@@ -423,6 +477,7 @@ static void writeCharacterStats(json& state)
             char* pName = perkGetName(i);
             p["name"] = safeString(pName);
             p["rank"] = rank;
+            p["description"] = safeString(perkGetDescription(i));
             perks.push_back(p);
         }
     }
@@ -498,6 +553,20 @@ static void writeCharacterStats(json& state)
     if (!addictions.empty())
         character["addictions"] = addictions;
 
+    // Kill counts
+    json killCounts;
+    for (int i = 0; i < KILL_TYPE_COUNT; i++) {
+        int count = killsGetByType(i);
+        if (count > 0) {
+            char* kName = killTypeGetName(i);
+            if (kName != nullptr) {
+                killCounts[safeString(kName)] = count;
+            }
+        }
+    }
+    if (!killCounts.empty())
+        character["kill_counts"] = killCounts;
+
     state["character"] = character;
 }
 
@@ -528,6 +597,56 @@ static void writeInventoryState(json& state)
         int weight = itemGetWeight(item);
         entry["weight"] = weight;
         totalWeight += weight * invItem->quantity;
+
+        // Description (skip if empty or same as name)
+        char* iDesc = itemGetDescription(item);
+        if (iDesc != nullptr && iDesc[0] != '\0') {
+            std::string descStr = safeString(iDesc);
+            if (descStr != entry["name"].get<std::string>()) {
+                entry["description"] = descStr;
+            }
+        }
+
+        // Detailed stats by item type
+        int iType = itemGetType(item);
+        if (iType == ITEM_TYPE_WEAPON) {
+            json ws;
+            int minDmg = 0, maxDmg = 0;
+            weaponGetDamageMinMax(item, &minDmg, &maxDmg);
+            ws["damage_min"] = minDmg;
+            ws["damage_max"] = maxDmg;
+            ws["damage_type"] = damageTypeToString(weaponGetDamageType(nullptr, item));
+            ws["ap_cost_primary"] = weaponGetPrimaryActionPointCost(item);
+            ws["ap_cost_secondary"] = weaponGetSecondaryActionPointCost(item);
+            ws["range"] = weaponGetRange(gDude, HIT_MODE_RIGHT_WEAPON_PRIMARY);
+            ws["min_strength"] = weaponGetMinStrengthRequired(item);
+            int caliber = ammoGetCaliber(item);
+            if (caliber > 0) {
+                ws["ammo_caliber"] = caliber;
+                ws["ammo_capacity"] = ammoGetCapacity(item);
+                ws["ammo_count"] = ammoGetQuantity(item);
+            }
+            entry["weapon_stats"] = ws;
+        } else if (iType == ITEM_TYPE_ARMOR) {
+            json as;
+            as["armor_class"] = armorGetArmorClass(item);
+            json dr, dt;
+            for (int t = 0; t < DAMAGE_TYPE_COUNT; t++) {
+                dr[damageTypeToString(t)] = armorGetDamageResistance(item, t);
+                dt[damageTypeToString(t)] = armorGetDamageThreshold(item, t);
+            }
+            as["damage_resistance"] = dr;
+            as["damage_threshold"] = dt;
+            entry["armor_stats"] = as;
+        } else if (iType == ITEM_TYPE_AMMO) {
+            json ams;
+            ams["caliber"] = ammoGetCaliber(item);
+            ams["ac_modifier"] = ammoGetArmorClassModifier(item);
+            ams["dr_modifier"] = ammoGetDamageResistanceModifier(item);
+            ams["damage_multiplier"] = ammoGetDamageMultiplier(item);
+            ams["damage_divisor"] = ammoGetDamageDivisor(item);
+            entry["ammo_stats"] = ams;
+        }
 
         items.push_back(entry);
     }
@@ -566,6 +685,17 @@ static void writeInventoryState(json& state)
         ar["pid"] = armor->pid;
         char* arName = itemGetName(armor);
         ar["name"] = safeString(arName);
+        // Armor stats
+        json armorStats;
+        armorStats["armor_class"] = armorGetArmorClass(armor);
+        json arDr, arDt;
+        for (int t = 0; t < DAMAGE_TYPE_COUNT; t++) {
+            arDr[damageTypeToString(t)] = armorGetDamageResistance(armor, t);
+            arDt[damageTypeToString(t)] = armorGetDamageThreshold(armor, t);
+        }
+        armorStats["damage_resistance"] = arDr;
+        armorStats["damage_threshold"] = arDt;
+        ar["armor_stats"] = armorStats;
         equipped["armor"] = ar;
     } else {
         equipped["armor"] = nullptr;
@@ -583,6 +713,7 @@ static void writeInventoryState(json& state)
     bool aimingMode = false;
     if (interfaceGetCurrentHitMode(&hitMode, &aimingMode) == 0) {
         inv["current_hit_mode"] = hitMode;
+        inv["current_hit_mode_name"] = hitModeToString(hitMode);
     }
 
     state["inventory"] = inv;
@@ -673,6 +804,12 @@ static void writeMapAndObjectState(json& state)
 
             char* cName = objectGetName(obj);
             c["name"] = safeString(cName);
+            char* cDesc = objectGetDescription(obj);
+            if (cDesc != nullptr && cDesc[0] != '\0') {
+                std::string cd = safeString(cDesc);
+                if (cd != c["name"].get<std::string>())
+                    c["description"] = cd;
+            }
             c["tile"] = obj->tile;
             c["distance"] = objectGetDistanceBetween(gDude, obj);
             c["hp"] = critterGetHitPoints(obj);
@@ -720,6 +857,12 @@ static void writeMapAndObjectState(json& state)
 
             char* iName = objectGetName(obj);
             it["name"] = safeString(iName);
+            char* iDesc = objectGetDescription(obj);
+            if (iDesc != nullptr && iDesc[0] != '\0') {
+                std::string id = safeString(iDesc);
+                if (id != it["name"].get<std::string>())
+                    it["description"] = id;
+            }
             it["tile"] = obj->tile;
             it["distance"] = dist;
             it["type"] = itemTypeToString(itemGetType(obj));
@@ -778,6 +921,12 @@ static void writeMapAndObjectState(json& state)
 
             char* sName = objectGetName(obj);
             s["name"] = safeString(sName);
+            char* sDesc = objectGetDescription(obj);
+            if (sDesc != nullptr && sDesc[0] != '\0') {
+                std::string sd = safeString(sDesc);
+                if (sd != s["name"].get<std::string>())
+                    s["description"] = sd;
+            }
             s["tile"] = obj->tile;
             s["distance"] = dist;
             s["scenery_type"] = sceneryTypeToString(scenType);
@@ -865,6 +1014,7 @@ static void writeCombatState(json& state)
     bool aiming = false;
     if (interfaceGetCurrentHitMode(&hitMode, &aiming) == 0) {
         combat["current_hit_mode"] = hitMode;
+        combat["current_hit_mode_name"] = hitModeToString(hitMode);
         combat["aiming"] = aiming;
     }
 
@@ -967,6 +1117,26 @@ static void writeCombatState(json& state)
     }
     combat["hostiles"] = hostiles;
     combat["pending_attacks"] = getPendingAttackCount();
+
+    // Turn order
+    int combatantCount = agentGetCombatantCount();
+    if (combatantCount > 0) {
+        json turnOrder = json::array();
+        for (int i = 0; i < combatantCount; i++) {
+            Object* combatant = agentGetCombatant(i);
+            if (combatant == nullptr || critterIsDead(combatant))
+                continue;
+            json entry;
+            entry["id"] = objectToUniqueId(combatant);
+            char* cName = objectGetName(combatant);
+            entry["name"] = safeString(cName);
+            entry["is_player"] = (combatant == gDude);
+            turnOrder.push_back(entry);
+        }
+        combat["turn_order"] = turnOrder;
+        combat["current_combatant_index"] = agentGetCurrentCombatantIndex();
+    }
+    combat["combat_round"] = _combatNumTurns;
 
     state["combat"] = combat;
 }
@@ -1388,6 +1558,16 @@ static void writeGameplayState(json& state, const char* context)
         gt["time_string"] = safeString(gameTimeGetTimeString());
         gt["ticks"] = gameTimeGetTime();
         state["game_time"] = gt;
+    }
+
+    // Difficulty settings
+    {
+        json s;
+        int gd = settings.preferences.game_difficulty;
+        int cd = settings.preferences.combat_difficulty;
+        s["game_difficulty"] = (gd == GAME_DIFFICULTY_EASY) ? "easy" : (gd == GAME_DIFFICULTY_HARD) ? "hard" : "normal";
+        s["combat_difficulty"] = (cd == COMBAT_DIFFICULTY_EASY) ? "easy" : (cd == COMBAT_DIFFICULTY_HARD) ? "hard" : "normal";
+        state["settings"] = s;
     }
 
     // World map is a special context — only character + worldmap + party + messages + quests state
