@@ -17,13 +17,18 @@ fallout2-sdk bridges Claude Code and Fallout 2 by modifying the [Fallout 2 Commu
 ```
 fallout2-sdk/
 ├── engine/fallout2-ce/     # Fallout 2 CE (git submodule) — upstream engine
-├── src/                    # SDK engine modifications (patches applied on top of CE)
-├── scripts/                # Setup and utility scripts
+├── src/                    # C++ agent bridge (patches applied on top of CE)
+│   ├── agent_bridge.cc     # Core: init/exit, ticker, context detection
+│   ├── agent_bridge.h      # Public API
+│   ├── agent_bridge_internal.h  # Shared internals
+│   ├── agent_state.cc      # All state emission (character, map, combat, dialogue, etc.)
+│   └── agent_commands.cc   # All command handlers (50+ commands)
+├── sdk/                    # TypeScript SDK — async wrapper over file-based IPC
+├── agent/                  # Claude agent wrapper — strategist, executors, objectives
+├── scripts/                # Utility scripts (play.sh, temple_run.sh, etc.)
 ├── game/                   # Local Fallout 2 game data (NOT committed — see Setup)
-├── docs/                   # Architecture and design documentation
-├── sdk.cfg.example         # Example configuration
-├── sdk.cfg                 # Local configuration (git-ignored)
-└── build/                  # Build output (git-ignored)
+├── docs/                   # Architecture docs, technical spec, session journal
+└── CLAUDE.md               # Claude Code project instructions
 ```
 
 ## Prerequisites
@@ -32,6 +37,7 @@ fallout2-sdk/
 - **CMake** 3.13+
 - **C++17 compiler** (Clang on macOS, MSVC on Windows, GCC on Linux)
 - **SDL2** (bundled with the CE build by default)
+- **Node.js** 18+ (for TypeScript SDK and agent wrapper)
 - **Git**
 
 ## Setup
@@ -117,23 +123,58 @@ You should see `master.dat` (~318 MB), `critter.dat` (~159 MB), and `patch000.da
 The SDK modifies the Fallout 2 CE engine to add an **AI bridge layer** that:
 
 - **Emits game state** as structured JSON after each game tick, covering:
-  - Player stats, skills, traits, HP, AP, position, level, and experience
-  - Map info (name, index, elevation) and player tile position
-  - Nearby objects: critters (with HP/dead status), ground items, scenery (doors with locked/open state), and exit grids (with destinations)
-  - Inventory: all carried items with type/weight, equipped items (both hands + armor), carry capacity
-  - Combat state: current/max AP, free move, active weapon stats, hostiles with per-location hit chances
-  - Dialogue state: speaker name/ID, NPC reply text, and all selectable response options
-  - Fine-grained context detection: `gameplay_exploration`, `gameplay_combat`, `gameplay_combat_wait`, `gameplay_dialogue`, `gameplay_inventory`, `gameplay_loot`
+  - Player stats, skills, traits, perks, HP, AP, position, level, experience, karma, town reputations, addictions
+  - Map info (name, index, elevation) and player tile/rotation/neighbors with walkability
+  - Nearby objects: critters (HP, team, party membership), ground items, scenery (doors, containers), exit grids (with destination map names)
+  - Inventory: all carried items with type/weight, equipped items (both hands + armor with ammo/damage stats), carry capacity
+  - Combat state: current/max AP, free move, active weapon stats for current hand, hostiles with per-location hit chances, attack pre-validation
+  - Dialogue state: speaker name/unique ID, NPC reply text, all selectable response options
+  - Loot/container state: target info, container items with quantities
+  - Barter state: merchant inventory with costs, offer/request tables, trade value estimation
+  - World map state: position, known areas with entrances, walking/car status
+  - Quest tracking: 110 quests with location, description, completion status
+  - Party members: HP, equipment, position, dead status
+  - Message log: recent skill checks, combat messages, area entry text
+  - Game time: hour, day, month, year
+  - 11 fine-grained contexts: `movie`, `main_menu`, `character_selector`, `character_editor`, `gameplay_exploration`, `gameplay_combat`, `gameplay_combat_wait`, `gameplay_dialogue`, `gameplay_inventory`, `gameplay_loot`, `gameplay_worldmap`, `gameplay_barter`
 
-- **Accepts input commands** via a command file, supporting:
-  - Movement: `move_to`, `run_to` (pathfinding + animation, triggers combat/traps/exit grids)
+- **Accepts 50+ input commands** via a command file, supporting:
+  - Movement: `move_to`, `run_to` (multi-waypoint pathfinding), `combat_move`
   - Exploration: `use_object`, `pick_up`, `use_skill`, `talk_to`, `use_item_on`, `look_at`
-  - Inventory: `equip_item`, `unequip_item`, `use_item`
-  - Combat: `attack` (with hit mode + aimed location), `combat_move`, `end_turn`, `use_combat_item`
+  - Inventory: `equip_item`, `unequip_item`, `use_item`, `reload_weapon`, `drop_item`, `arm_explosive`
+  - Combat: `attack` (with hit mode + aimed location), `end_turn`, `use_combat_item`, `enter_combat`, `flee_combat`
   - Dialogue: `select_dialogue` (by option index)
-  - Character creation: `set_special`, `select_traits`, `tag_skills`, `set_name`, `finish_character_creation`, `adjust_stat`, `toggle_trait`, `toggle_skill_tag`
-  - Raw input: `mouse_move`, `mouse_click`, `key_press`, `key_release`
-  - Menu navigation: `main_menu_select`, `char_selector_select`
+  - Containers: `open_container`, `loot_take`, `loot_take_all`, `loot_close`
+  - Barter: `barter_offer`, `barter_remove_offer`, `barter_request`, `barter_remove_request`, `barter_confirm`, `barter_talk`, `barter_cancel`
+  - Level-up: `skill_add`, `skill_sub`, `perk_add`
+  - World map: `worldmap_travel`, `worldmap_enter_location`, `map_transition`
+  - Interface: `switch_hand`, `cycle_attack_mode`, `center_camera`, `rest`, `pip_boy`, `character_screen`, `inventory_open`, `skilldex`, `toggle_sneak`
+  - Save/Load: `quicksave`, `quickload`, `save_slot`, `load_slot`
+  - Character creation: `set_special`, `select_traits`, `tag_skills`, `set_name`, `editor_done`, `adjust_stat`, `toggle_trait`, `toggle_skill_tag`
+  - Menu navigation: `main_menu`, `main_menu_select`, `char_selector_select`, `skip`
+  - Debug: `find_path`, `tile_objects`, `find_item`, `teleport` (test mode only), `give_item` (test mode only)
+
+### TypeScript SDK (`sdk/`)
+
+Async wrapper over the file-based IPC protocol with typed interfaces for all game states and commands:
+
+```typescript
+import { FalloutSDK } from "@fallout2-sdk/core";
+const sdk = new FalloutSDK("./game");
+const state = sdk.getState();              // Read current game state
+await sdk.moveTo(15887);                   // Walk to tile
+await sdk.attack(targetId, "eyes");        // Attack with aimed shot
+await sdk.selectDialogue(2);               // Pick dialogue option
+await sdk.waitForIdle();                   // Wait for animation to finish
+```
+
+### Agent Wrapper (`agent/`)
+
+Claude-driven autonomous agent with objective-based planning:
+- **Strategist** — Claude API interface for map surveys, objective planning, dialogue choices, barter decisions
+- **Executors** — deterministic modules for combat (target/AP management), navigation (waypoints, doors), loot, interaction, world map
+- **Objective system** — priority queue with pending/active/completed/blocked states
+- **Memory** — per-map tracking of visited tiles, looted containers, NPC knowledge
 
 Key engine integration points:
 - **Ticker callback** — registered via the engine's ticker system for per-tick state emission and command reading
@@ -144,7 +185,13 @@ Key engine integration points:
 
 ## Project Status
 
-Active development. The agent bridge supports character creation and full Temple of Trials gameplay (exploration, combat, inventory, dialogue). See [`docs/fallout2-sdk-technical-spec.md`](docs/fallout2-sdk-technical-spec.md) for the full technical spec.
+Active development. The agent bridge has been validated through:
+
+- **Temple of Trials** — fully cleared legitimately by Claude Code (character creation, 3 dungeon levels, combat, lockpicking, explosive puzzle, Cameron's unarmed test, vault suit movie)
+- **Klamath** — world map travel, NPC dialogue trees, barter trading, ranged combat with ammo tracking, container looting, Sulik recruitment
+- **All major gameplay systems** functional: exploration, combat, dialogue, inventory, barter, world map, quests, level-up, party, save/load
+
+See [`docs/fallout2-sdk-technical-spec.md`](docs/fallout2-sdk-technical-spec.md) for the full technical spec and [`docs/journal.md`](docs/journal.md) for session-by-session development history.
 
 ## License
 
