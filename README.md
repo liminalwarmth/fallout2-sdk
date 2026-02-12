@@ -117,29 +117,34 @@ You should see `master.dat` (~318 MB), `critter.dat` (~159 MB), and `patch000.da
 The SDK modifies the Fallout 2 CE engine to add an **AI bridge layer** that:
 
 - **Emits game state** as structured JSON after each game tick, covering:
-  - Player stats, skills, perks, HP, AP, position, inventory, and equipment
-  - Visible map objects (NPCs, items, scenery) with positions and properties
-  - Combat state (turn order, AP, target info, available actions)
-  - Dialogue trees (NPC text, available response options)
-  - World map state (known locations, current position, travel status)
-  - Active quests and global variable state
+  - Player stats, skills, traits, HP, AP, position, level, and experience
+  - Map info (name, index, elevation) and player tile position
+  - Nearby objects: critters (with HP/dead status), ground items, scenery (doors with locked/open state), and exit grids (with destinations)
+  - Inventory: all carried items with type/weight, equipped items (both hands + armor), carry capacity
+  - Combat state: current/max AP, free move, active weapon stats, hostiles with per-location hit chances
+  - Dialogue state: speaker name/ID, NPC reply text, and all selectable response options
+  - Fine-grained context detection: `gameplay_exploration`, `gameplay_combat`, `gameplay_combat_wait`, `gameplay_dialogue`, `gameplay_inventory`, `gameplay_loot`
 
 - **Accepts input commands** via a command file, supporting:
-  - Movement (hex tile targets, world map destinations)
-  - Combat actions (attack, use item, end turn, target selection)
-  - Dialogue choices (select response by index)
-  - Inventory management (use, equip, drop, give)
-  - Skill usage (lockpick, repair, speech, etc.)
+  - Movement: `move_to`, `run_to` (pathfinding + animation, triggers combat/traps/exit grids)
+  - Exploration: `use_object`, `pick_up`, `use_skill`, `talk_to`, `use_item_on`, `look_at`
+  - Inventory: `equip_item`, `unequip_item`, `use_item`
+  - Combat: `attack` (with hit mode + aimed location), `combat_move`, `end_turn`, `use_combat_item`
+  - Dialogue: `select_dialogue` (by option index)
+  - Character creation: `set_special`, `select_traits`, `tag_skills`, `set_name`, `finish_character_creation`, `adjust_stat`, `toggle_trait`, `toggle_skill_tag`
+  - Raw input: `mouse_move`, `mouse_click`, `key_press`, `key_release`
+  - Menu navigation: `main_menu_select`, `char_selector_select`
 
 Key engine integration points:
-- **Main loop hook** (`game.cc`) — emits state and reads commands each tick
-- **Input injection** (`input.cc`) — translates AI commands into synthetic input events
-- **Sfall opcode extensions** — custom opcodes for AI-specific queries
-- **Ticker callback** — registered via the engine's ticker system for periodic state dumps
+- **Ticker callback** — registered via the engine's ticker system for per-tick state emission and command reading
+- **Context hooks** — manual hooks in `mainmenu.cc`, `character_selector.cc`, `character_editor.cc`, and `main.cc`
+- **Animation system** — all movement/interaction commands go through `reg_anim_begin`/`animationRegisterMoveToTile`/`reg_anim_end` so triggers fire normally
+- **Action system** — `actionPickUp`, `actionUseSkill`, `actionTalk`, etc. handle walk-to + interact
+- **Dialogue accessors** — custom `agentGetDialogOptionCount/Text/ReplyText` functions expose static dialogue state
 
 ## Project Status
 
-Early development. Not yet playable.
+Active development. The agent bridge supports character creation and full Temple of Trials gameplay (exploration, combat, inventory, dialogue). See [`docs/fallout2-sdk-technical-spec.md`](docs/fallout2-sdk-technical-spec.md) for the full technical spec.
 
 ## License
 
