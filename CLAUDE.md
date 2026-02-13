@@ -48,6 +48,9 @@ git clone --recurse-submodules <repo-url>
 # Or initialize submodule after clone
 git submodule update --init --recursive
 
+# Apply engine patches (required for agent bridge)
+./scripts/apply-patches.sh
+
 # Install game data (interactive or from source)
 ./scripts/setup.sh
 ./scripts/setup.sh --from /path/to/fallout2/install
@@ -185,6 +188,35 @@ When adding new state enrichment or commands, always verify them end-to-end in t
 | `engine/fallout2-ce/src/pipboy.cc` | Added `agentInitQuestData()`, quest/holodisk accessor implementations (~90 lines) |
 | `engine/fallout2-ce/src/worldmap.h` | Added 8 accessor declarations for world map area/entrance queries |
 | `engine/fallout2-ce/CMakeLists.txt` | Added `agent_state.cc`, `agent_commands.cc`, `agent_bridge_internal.h` to AGENT_BRIDGE sources |
+
+### Engine Patches
+
+Engine modifications to `engine/fallout2-ce/` are stored as a patch file in `engine/patches/` and applied on top of the upstream submodule. This preserves our changes in version control without forking the upstream repo.
+
+**After cloning / pulling:**
+```bash
+git submodule update --init --recursive
+./scripts/apply-patches.sh
+```
+
+**After modifying engine files:**
+When you change any file inside `engine/fallout2-ce/src/`, regenerate the patch:
+```bash
+./scripts/generate-patches.sh
+git add engine/patches/
+git commit -m "Update engine patches"
+```
+
+**Updating upstream:**
+To pull new upstream changes and re-apply patches:
+```bash
+cd engine/fallout2-ce
+git stash          # stash our modifications
+git pull           # pull upstream
+git stash pop      # re-apply (resolve conflicts if needed)
+cd ../..
+./scripts/generate-patches.sh  # regenerate patch
+```
 
 ### Command Reference
 

@@ -1,0 +1,928 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5e03941..c2bc37c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -21,6 +21,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
+ set(CMAKE_CXX_EXTENSIONS NO)
+ 
+ option(FALLOUT_VENDORED "Use vendored third-party libraries" ON)
++option(AGENT_BRIDGE "Enable file-based agent bridge" OFF)
+ 
+ if(ANDROID)
+     add_library(${EXECUTABLE_NAME} SHARED)
+@@ -375,6 +376,26 @@ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${ZLIB_INCLUDE_DIRS})
+ target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
+ target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
+ 
++if(AGENT_BRIDGE)
++    include(FetchContent)
++    FetchContent_Declare(
++        nlohmann_json
++        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
++    )
++    FetchContent_MakeAvailable(nlohmann_json)
++
++    target_compile_definitions(${EXECUTABLE_NAME} PUBLIC AGENT_BRIDGE)
++    target_sources(${EXECUTABLE_NAME} PRIVATE
++        "../../src/agent_bridge.h"
++        "../../src/agent_bridge_internal.h"
++        "../../src/agent_bridge.cc"
++        "../../src/agent_state.cc"
++        "../../src/agent_commands.cc"
++    )
++    target_include_directories(${EXECUTABLE_NAME} PRIVATE ../../src ${CMAKE_CURRENT_SOURCE_DIR}/src)
++    target_link_libraries(${EXECUTABLE_NAME} nlohmann_json::nlohmann_json)
++endif()
++
+ if(APPLE)
+     if(IOS)
+         install(TARGETS ${EXECUTABLE_NAME} DESTINATION "Payload")
+diff --git a/src/character_editor.cc b/src/character_editor.cc
+index 0d989a7..b674bcd 100644
+--- a/src/character_editor.cc
++++ b/src/character_editor.cc
+@@ -8,6 +8,10 @@
+ #include <algorithm>
+ #include <vector>
+ 
++#ifdef AGENT_BRIDGE
++#include "agent_bridge.h"
++#endif
++
+ #include "art.h"
+ #include "color.h"
+ #include "combat.h"
+@@ -754,19 +758,19 @@ static int gCharacterEditorOptionalTraitsBackup[3];
+ // current index for selecting new trait
+ //
+ // 0x5709FC
+-static int gCharacterEditorTempTraitCount;
++int gCharacterEditorTempTraitCount;
+ 
+ // 0x570A00
+ static int gPerkDialogOptionCount;
+ 
+ // 0x570A04
+-static int gCharacterEditorTempTraits[3];
++int gCharacterEditorTempTraits[3];
+ 
+ // 0x570A10
+-static int gCharacterEditorTaggedSkillCount;
++int gCharacterEditorTaggedSkillCount;
+ 
+ // 0x570A14
+-static int gCharacterEditorTempTaggedSkills[NUM_TAGGED_SKILLS];
++int gCharacterEditorTempTaggedSkills[NUM_TAGGED_SKILLS];
+ 
+ // 0x570A28
+ static char gCharacterEditorHasFreePerkBackup;
+@@ -808,6 +812,10 @@ int characterEditorShow(bool isCreationMode)
+         return -1;
+     }
+ 
++#ifdef AGENT_BRIDGE
++    agentBridgeSetContext(AGENT_CONTEXT_CHAR_EDITOR);
++#endif
++
+     if (!gCharacterEditorIsCreationMode) {
+         if (characterEditorUpdateLevel()) {
+             critterUpdateDerivedStats(gDude);
+diff --git a/src/character_editor.h b/src/character_editor.h
+index af69e84..be773fb 100644
+--- a/src/character_editor.h
++++ b/src/character_editor.h
+@@ -6,6 +6,10 @@
+ namespace fallout {
+ 
+ extern int gCharacterEditorRemainingCharacterPoints;
++extern int gCharacterEditorTaggedSkillCount;
++extern int gCharacterEditorTempTraitCount;
++extern int gCharacterEditorTempTraits[3];
++extern int gCharacterEditorTempTaggedSkills[4];
+ 
+ int characterEditorShow(bool isCreationMode);
+ void characterEditorInit();
+diff --git a/src/character_selector.cc b/src/character_selector.cc
+index 76d3ea4..e6ddb9e 100644
+--- a/src/character_selector.cc
++++ b/src/character_selector.cc
+@@ -6,6 +6,10 @@
+ #include <algorithm>
+ #include <vector>
+ 
++#ifdef AGENT_BRIDGE
++#include "agent_bridge.h"
++#endif
++
+ #include "art.h"
+ #include "character_editor.h"
+ #include "color.h"
+@@ -152,6 +156,10 @@ int characterSelectorOpen()
+         return 0;
+     }
+ 
++#ifdef AGENT_BRIDGE
++    agentBridgeSetContext(AGENT_CONTEXT_CHAR_SELECTOR);
++#endif
++
+     bool cursorWasHidden = cursorIsHidden();
+     if (cursorWasHidden) {
+         mouseShowCursor();
+diff --git a/src/combat.cc b/src/combat.cc
+index 825a573..c0d2d17 100644
+--- a/src/combat.cc
++++ b/src/combat.cc
+@@ -3226,6 +3226,11 @@ static int _combat_turn(Object* obj, bool a2)
+ {
+     _combat_turn_obj = obj;
+ 
++    // Center camera on the acting combatant so the player can see each turn
++    if (obj->elevation == gDude->elevation) {
++        tileSetCenter(obj->tile, TILE_SET_CENTER_REFRESH_WINDOW);
++    }
++
+     attackInit(&_main_ctd, obj, nullptr, HIT_MODE_PUNCH, HIT_LOCATION_TORSO);
+ 
+     if ((obj->data.critter.combat.results & (DAM_KNOCKED_OUT | DAM_DEAD | DAM_LOSE_TURN)) != 0) {
+@@ -6842,4 +6847,22 @@ Attack* combat_get_data()
+     return &_main_ctd;
+ }
+ 
++// Agent bridge accessors for combat turn order
++int agentGetCombatantCount()
++{
++    return _list_total;
++}
++
++Object* agentGetCombatant(int index)
++{
++    if (index < 0 || index >= _list_total || _combat_list == nullptr)
++        return nullptr;
++    return _combat_list[index];
++}
++
++int agentGetCurrentCombatantIndex()
++{
++    return _list_com;
++}
++
+ } // namespace fallout
+diff --git a/src/combat.h b/src/combat.h
+index 7935844..1c62a27 100644
+--- a/src/combat.h
++++ b/src/combat.h
+@@ -76,6 +76,11 @@ void combat_set_hit_location_penalty(int hit_location, int penalty);
+ void combat_reset_hit_location_penalty();
+ Attack* combat_get_data();
+ 
++// Agent bridge accessors for combat turn order
++int agentGetCombatantCount();
++Object* agentGetCombatant(int index);
++int agentGetCurrentCombatantIndex();
++
+ static inline bool isInCombat()
+ {
+     return (gCombatState & COMBAT_STATE_0x01) != 0;
+diff --git a/src/display_monitor.cc b/src/display_monitor.cc
+index 977c029..2ec610b 100644
+--- a/src/display_monitor.cc
++++ b/src/display_monitor.cc
+@@ -482,4 +482,21 @@ static void consoleFileFlush()
+     }
+ }
+ 
++// Agent bridge accessors — read recent messages from the circular buffer
++int agentDisplayMonitorGetLineCount()
++{
++    return gDisplayMonitorLinesCapacity;
++}
++
++const char* agentDisplayMonitorGetLine(int index)
++{
++    // Index 0 = most recent line, 1 = second most recent, etc.
++    // _disp_start points to the next insertion slot (one past latest)
++    if (index < 0 || index >= gDisplayMonitorLinesCapacity) {
++        return nullptr;
++    }
++    int actualIndex = (gDisplayMonitorLinesCapacity + _disp_start - 1 - index) % gDisplayMonitorLinesCapacity;
++    return gDisplayMonitorLines[actualIndex];
++}
++
+ } // namespace fallout
+diff --git a/src/display_monitor.h b/src/display_monitor.h
+index 39d5a19..011705e 100644
+--- a/src/display_monitor.h
++++ b/src/display_monitor.h
+@@ -10,6 +10,10 @@ void displayMonitorAddMessage(char* string);
+ void displayMonitorDisable();
+ void displayMonitorEnable();
+ 
++// Agent bridge accessors for message log
++int agentDisplayMonitorGetLineCount();
++const char* agentDisplayMonitorGetLine(int index);
++
+ } // namespace fallout
+ 
+ #endif /* DISPLAY_MONITOR_H */
+diff --git a/src/game.cc b/src/game.cc
+index 978a385..5758bd9 100644
+--- a/src/game.cc
++++ b/src/game.cc
+@@ -3,6 +3,10 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
++#ifdef AGENT_BRIDGE
++#include "agent_bridge.h"
++#endif
++
+ #include "actions.h"
+ #include "animation.h"
+ #include "art.h"
+@@ -381,6 +385,10 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     messageListRepositorySetStandardMessageList(STANDARD_MESSAGE_LIST_MISC, &gMiscMessageList);
+ 
++#ifdef AGENT_BRIDGE
++    agentBridgeInit();
++#endif
++
+     return 0;
+ }
+ 
+@@ -435,6 +443,10 @@ void gameExit()
+ {
+     debugPrint("\nGame Exit\n");
+ 
++#ifdef AGENT_BRIDGE
++    agentBridgeExit();
++#endif
++
+     // SFALL
+     sfall_gl_scr_exit();
+     sfallArraysExit();
+diff --git a/src/game_dialog.cc b/src/game_dialog.cc
+index ff98814..61bc711 100644
+--- a/src/game_dialog.cc
++++ b/src/game_dialog.cc
+@@ -668,6 +668,38 @@ bool _gdialogActive()
+     return _dialog_state_fix != 0;
+ }
+ 
++int agentGetDialogOptionCount()
++{
++    return gGameDialogOptionEntriesLength;
++}
++
++const char* agentGetDialogOptionText(int index)
++{
++    if (index < 0 || index >= gGameDialogOptionEntriesLength)
++        return nullptr;
++    return gDialogOptionEntries[index].text;
++}
++
++const char* agentGetDialogReplyText()
++{
++    return gDialogReplyText;
++}
++
++Object* agentGetBarterPlayerTable()
++{
++    return _peon_table_obj;
++}
++
++Object* agentGetBarterMerchantTable()
++{
++    return _barterer_table_obj;
++}
++
++int agentGetBarterModifier()
++{
++    return gGameDialogBarterModifier;
++}
++
+ // gdialogEnter
+ // 0x444D3C
+ void gameDialogEnter(Object* speaker, int a2)
+diff --git a/src/game_dialog.h b/src/game_dialog.h
+index 0dccf6b..94830a9 100644
+--- a/src/game_dialog.h
++++ b/src/game_dialog.h
+@@ -39,6 +39,16 @@ void gameDialogSetBarterModifier(int modifier);
+ int gameDialogBarter(int modifier);
+ void _barter_end_to_talk_to();
+ 
++// Agent bridge accessors for dialogue state
++int agentGetDialogOptionCount();
++const char* agentGetDialogOptionText(int index);
++const char* agentGetDialogReplyText();
++
++// Agent bridge accessors for barter state
++Object* agentGetBarterPlayerTable();
++Object* agentGetBarterMerchantTable();
++int agentGetBarterModifier();
++
+ } // namespace fallout
+ 
+ #endif /* GAME_DIALOG_H */
+diff --git a/src/loadsave.cc b/src/loadsave.cc
+index f352c35..1538fb4 100644
+--- a/src/loadsave.cc
++++ b/src/loadsave.cc
+@@ -834,6 +834,168 @@ int lsgSaveGame(int mode)
+     return rc;
+ }
+ 
++// Agent bridge: programmatic quicksave that bypasses the UI entirely.
++// Sets slot 0, writes a description, takes snapshot, and saves.
++int agentQuickSave(const char* description)
++{
++    ScopedGameMode gm(GameMode::kSaveGame);
++
++    _ls_error_code = 0;
++    _patches = settings.system.master_patches_path.c_str();
++    _slot_cursor = 0;
++
++    // Set up the slot description
++    memset(&_LSData[0], 0, sizeof(LoadSaveSlotData));
++    if (description != nullptr) {
++        strncpy(_LSData[0].description, description, LOAD_SAVE_DESCRIPTION_LENGTH - 1);
++        _LSData[0].description[LOAD_SAVE_DESCRIPTION_LENGTH - 1] = '\0';
++    } else {
++        strncpy(_LSData[0].description, "Agent Save", LOAD_SAVE_DESCRIPTION_LENGTH - 1);
++    }
++
++    if (!messageListInit(&gLoadSaveMessageList)) {
++        return -1;
++    }
++
++    char path[COMPAT_MAX_PATH];
++    snprintf(path, sizeof(path), "%s%s", asc_5186C8, "LSGAME.MSG");
++    if (!messageListLoad(&gLoadSaveMessageList, path)) {
++        return -1;
++    }
++
++    _snapshotBuf = nullptr;
++    int v6 = _QuickSnapShot();
++    if (v6 == 1) {
++        int v7 = lsgPerformSaveGame();
++        if (v7 != -1) {
++            v6 = v7;
++        }
++    }
++
++    if (_snapshotBuf != nullptr) {
++        internal_free(_snapshot);
++    }
++
++    gameMouseSetCursor(MOUSE_CURSOR_ARROW);
++
++    messageListFree(&gLoadSaveMessageList);
++
++    if (v6 != -1) {
++        _quick_done = true;
++        return 1;
++    }
++
++    return -1;
++}
++
++// Agent bridge: programmatic quickload that bypasses the UI.
++int agentQuickLoad()
++{
++    ScopedGameMode gm(GameMode::kLoadGame);
++
++    _ls_error_code = 0;
++    _patches = settings.system.master_patches_path.c_str();
++    _slot_cursor = 0;
++
++    // Check if the save file exists
++    snprintf(_gmpath, sizeof(_gmpath), "%s\\%s%.2d\\", "SAVEGAME", "SLOT", _slot_cursor + 1);
++    strcat(_gmpath, "SAVE.DAT");
++
++    _flptr = fileOpen(_gmpath, "rb");
++    if (_flptr == nullptr) {
++        return -1;
++    }
++    fileClose(_flptr);
++
++    if (!messageListInit(&gLoadSaveMessageList)) {
++        return -1;
++    }
++
++    char path[COMPAT_MAX_PATH];
++    snprintf(path, sizeof(path), "%s%s", asc_5186C8, "LSGAME.MSG");
++    if (!messageListLoad(&gLoadSaveMessageList, path)) {
++        return -1;
++    }
++
++    int rc = lsgLoadGameInSlot(_slot_cursor);
++
++    messageListFree(&gLoadSaveMessageList);
++
++    if (rc != -1) {
++        _quick_done = true;
++    }
++
++    return rc;
++}
++
++// Agent bridge: save to a specific slot (0-9 = SLOT01-SLOT10)
++int agentSaveToSlot(int slot, const char* description)
++{
++    if (slot < 0 || slot > 9) return -1;
++
++    ScopedGameMode gm(GameMode::kSaveGame);
++
++    _ls_error_code = 0;
++    _patches = settings.system.master_patches_path.c_str();
++    _slot_cursor = slot;
++
++    memset(&_LSData[slot], 0, sizeof(LoadSaveSlotData));
++    const char* desc = (description != nullptr) ? description : "Agent Save";
++    strncpy(_LSData[slot].description, desc, LOAD_SAVE_DESCRIPTION_LENGTH - 1);
++    _LSData[slot].description[LOAD_SAVE_DESCRIPTION_LENGTH - 1] = '\0';
++
++    if (!messageListInit(&gLoadSaveMessageList)) return -1;
++
++    char path[COMPAT_MAX_PATH];
++    snprintf(path, sizeof(path), "%s%s", asc_5186C8, "LSGAME.MSG");
++    if (!messageListLoad(&gLoadSaveMessageList, path)) return -1;
++
++    _snapshotBuf = nullptr;
++    int v6 = _QuickSnapShot();
++    if (v6 == 1) {
++        int v7 = lsgPerformSaveGame();
++        if (v7 != -1) v6 = v7;
++    }
++
++    if (_snapshotBuf != nullptr) internal_free(_snapshot);
++    gameMouseSetCursor(MOUSE_CURSOR_ARROW);
++    messageListFree(&gLoadSaveMessageList);
++
++    if (v6 != -1) { _quick_done = true; return 1; }
++    return -1;
++}
++
++// Agent bridge: load from a specific slot (0-9 = SLOT01-SLOT10)
++int agentLoadFromSlot(int slot)
++{
++    if (slot < 0 || slot > 9) return -1;
++
++    ScopedGameMode gm(GameMode::kLoadGame);
++
++    _ls_error_code = 0;
++    _patches = settings.system.master_patches_path.c_str();
++    _slot_cursor = slot;
++
++    snprintf(_gmpath, sizeof(_gmpath), "%s\\%s%.2d\\", "SAVEGAME", "SLOT", _slot_cursor + 1);
++    strcat(_gmpath, "SAVE.DAT");
++
++    _flptr = fileOpen(_gmpath, "rb");
++    if (_flptr == nullptr) return -1;
++    fileClose(_flptr);
++
++    if (!messageListInit(&gLoadSaveMessageList)) return -1;
++
++    char path[COMPAT_MAX_PATH];
++    snprintf(path, sizeof(path), "%s%s", asc_5186C8, "LSGAME.MSG");
++    if (!messageListLoad(&gLoadSaveMessageList, path)) return -1;
++
++    int rc = lsgLoadGameInSlot(_slot_cursor);
++    messageListFree(&gLoadSaveMessageList);
++
++    if (rc != -1) _quick_done = true;
++    return rc;
++}
++
+ // 0x47C5B4
+ static int _QuickSnapShot()
+ {
+diff --git a/src/loadsave.h b/src/loadsave.h
+index 567548e..49835c3 100644
+--- a/src/loadsave.h
++++ b/src/loadsave.h
+@@ -23,6 +23,12 @@ void lsgInit();
+ int MapDirErase(const char* path, const char* extension);
+ int _MapDirEraseFile_(const char* a1, const char* a2);
+ 
++// Agent bridge: programmatic save/load bypassing the UI
++int agentQuickSave(const char* description = nullptr);
++int agentQuickLoad();
++int agentSaveToSlot(int slot, const char* description = nullptr);
++int agentLoadFromSlot(int slot);
++
+ } // namespace fallout
+ 
+ #endif /* LOAD_SAVE_GAME_H */
+diff --git a/src/main.cc b/src/main.cc
+index ee67a0a..23d481c 100644
+--- a/src/main.cc
++++ b/src/main.cc
+@@ -3,6 +3,10 @@
+ #include <limits.h>
+ #include <string.h>
+ 
++#ifdef AGENT_BRIDGE
++#include "agent_bridge.h"
++#endif
++
+ #include "art.h"
+ #include "autorun.h"
+ #include "character_selector.h"
+@@ -129,6 +133,9 @@ int falloutMain(int argc, char** argv)
+                     // SFALL: AfterNewGameStartHook.
+                     sfall_gl_scr_exec_start_proc();
+ 
++#ifdef AGENT_BRIDGE
++                    agentBridgeSetContext(AGENT_CONTEXT_GAMEPLAY);
++#endif
+                     mainLoop();
+                     paletteFadeTo(gPaletteWhite);
+ 
+@@ -158,12 +165,27 @@ int falloutMain(int argc, char** argv)
+ 
+                     colorPaletteLoad("color.pal");
+                     paletteFadeTo(_cmap);
+-                    int loadGameRc = lsgLoadGame(LOAD_SAVE_MODE_FROM_MAIN_MENU);
++                    int loadGameRc;
++#ifdef AGENT_BRIDGE
++                    if (gAgentPendingLoadSlot >= 0) {
++                        // Agent requested direct slot load — bypass the dialog
++                        loadGameRc = agentLoadFromSlot(gAgentPendingLoadSlot);
++                        gAgentPendingLoadSlot = -1;
++                        if (loadGameRc == 0) loadGameRc = 1; // normalize: 1 = success
++                    } else {
++                        loadGameRc = lsgLoadGame(LOAD_SAVE_MODE_FROM_MAIN_MENU);
++                    }
++#else
++                    loadGameRc = lsgLoadGame(LOAD_SAVE_MODE_FROM_MAIN_MENU);
++#endif
+                     if (loadGameRc == -1) {
+                         debugPrint("\n ** Error running LoadGame()! **\n");
+                     } else if (loadGameRc != 0) {
+                         windowDestroy(win);
+                         win = -1;
++#ifdef AGENT_BRIDGE
++                        agentBridgeSetContext(AGENT_CONTEXT_GAMEPLAY);
++#endif
+                         mainLoop();
+                     }
+                     paletteFadeTo(gPaletteWhite);
+diff --git a/src/mainmenu.cc b/src/mainmenu.cc
+index bc0bf0a..4e4e67e 100644
+--- a/src/mainmenu.cc
++++ b/src/mainmenu.cc
+@@ -2,6 +2,10 @@
+ 
+ #include <ctype.h>
+ 
++#ifdef AGENT_BRIDGE
++#include "agent_bridge.h"
++#endif
++
+ #include "art.h"
+ #include "color.h"
+ #include "draw.h"
+@@ -303,6 +307,10 @@ int mainMenuWindowHandleEvents()
+ {
+     _in_main_menu = true;
+ 
++#ifdef AGENT_BRIDGE
++    agentBridgeSetContext(AGENT_CONTEXT_MAIN_MENU);
++#endif
++
+     bool oldCursorIsHidden = cursorIsHidden();
+     if (oldCursorIsHidden) {
+         mouseShowCursor();
+@@ -316,6 +324,23 @@ int mainMenuWindowHandleEvents()
+ 
+         int keyCode = inputGetInput();
+ 
++#ifdef AGENT_BRIDGE
++        // Check for agent-injected main menu actions
++        if (gAgentMainMenuAction != 0) {
++            switch (gAgentMainMenuAction) {
++            case 1: rc = MAIN_MENU_NEW_GAME; break;
++            case 2: rc = MAIN_MENU_LOAD_GAME; break;
++            case 3: rc = MAIN_MENU_OPTIONS; break;
++            case 4: rc = MAIN_MENU_EXIT; break;
++            }
++            gAgentMainMenuAction = 0;
++            if (rc != -1) {
++                main_menu_play_sound("nmselec1");
++                break;
++            }
++        }
++#endif
++
+         for (int buttonIndex = 0; buttonIndex < MAIN_MENU_BUTTON_COUNT; buttonIndex++) {
+             if (keyCode == gMainMenuButtonKeyBindings[buttonIndex] || keyCode == toupper(gMainMenuButtonKeyBindings[buttonIndex])) {
+                 // NOTE: Uninline.
+diff --git a/src/pipboy.cc b/src/pipboy.cc
+index 9327894..2eecc96 100644
+--- a/src/pipboy.cc
++++ b/src/pipboy.cc
+@@ -2605,4 +2605,98 @@ static void holodiskFree()
+     gHolodisksCount = 0;
+ }
+ 
++// --- Agent bridge accessors ---
++
++int agentInitQuestData()
++{
++    if (gQuestsCount == 0) {
++        if (questInit() == -1) {
++            return -1;
++        }
++    }
++    if (gHolodisksCount == 0) {
++        holodiskInit();
++    }
++    return 0;
++}
++
++int agentGetQuestCount()
++{
++    return gQuestsCount;
++}
++
++int agentGetQuestLocationMsgId(int index)
++{
++    if (index < 0 || index >= gQuestsCount) return -1;
++    return gQuestDescriptions[index].location;
++}
++
++int agentGetQuestDescriptionMsgId(int index)
++{
++    if (index < 0 || index >= gQuestsCount) return -1;
++    return gQuestDescriptions[index].description;
++}
++
++int agentGetQuestGvar(int index)
++{
++    if (index < 0 || index >= gQuestsCount) return -1;
++    return gQuestDescriptions[index].gvar;
++}
++
++int agentGetQuestDisplayThreshold(int index)
++{
++    if (index < 0 || index >= gQuestsCount) return 0;
++    return gQuestDescriptions[index].displayThreshold;
++}
++
++int agentGetQuestCompletedThreshold(int index)
++{
++    if (index < 0 || index >= gQuestsCount) return 0;
++    return gQuestDescriptions[index].completedThreshold;
++}
++
++const char* agentGetQuestDescriptionText(int index)
++{
++    if (index < 0 || index >= gQuestsCount) return nullptr;
++    MessageListItem item;
++    item.num = gQuestDescriptions[index].description;
++    if (messageListGetItem(&gQuestsMessageList, &item)) {
++        return item.text;
++    }
++    return nullptr;
++}
++
++const char* agentGetQuestLocationText(int index)
++{
++    if (index < 0 || index >= gQuestsCount) return nullptr;
++    MessageListItem item;
++    item.num = gQuestDescriptions[index].location;
++    if (messageListGetItem(&gMapMessageList, &item)) {
++        return item.text;
++    }
++    return nullptr;
++}
++
++int agentGetHolodiskCount()
++{
++    return gHolodisksCount;
++}
++
++int agentGetHolodiskGvar(int index)
++{
++    if (index < 0 || index >= gHolodisksCount) return -1;
++    return gHolodiskDescriptions[index].gvar;
++}
++
++const char* agentGetHolodiskName(int index)
++{
++    if (index < 0 || index >= gHolodisksCount) return nullptr;
++    MessageListItem item;
++    item.num = gHolodiskDescriptions[index].name;
++    if (messageListGetItem(&gQuestsMessageList, &item)) {
++        return item.text;
++    }
++    return nullptr;
++}
++
+ } // namespace fallout
+diff --git a/src/pipboy.h b/src/pipboy.h
+index bd17f64..6f8e55b 100644
+--- a/src/pipboy.h
++++ b/src/pipboy.h
+@@ -16,6 +16,21 @@ void pipboyReset();
+ int pipboySave(File* stream);
+ int pipboyLoad(File* stream);
+ 
++// Agent bridge: quest and holodisk data
++int agentInitQuestData();
++int agentGetQuestCount();
++int agentGetQuestLocationMsgId(int index);
++int agentGetQuestDescriptionMsgId(int index);
++int agentGetQuestGvar(int index);
++int agentGetQuestDisplayThreshold(int index);
++int agentGetQuestCompletedThreshold(int index);
++const char* agentGetQuestDescriptionText(int index);
++const char* agentGetQuestLocationText(int index);
++
++int agentGetHolodiskCount();
++int agentGetHolodiskGvar(int index);
++const char* agentGetHolodiskName(int index);
++
+ } // namespace fallout
+ 
+ #endif /* PIPBOY_H */
+diff --git a/src/proto_instance.cc b/src/proto_instance.cc
+index 02bb39d..f162b21 100644
+--- a/src/proto_instance.cc
++++ b/src/proto_instance.cc
+@@ -1631,6 +1631,16 @@ static int _check_door_state(Object* door, Object* obj2)
+             door->flags &= ~OBJECT_OPEN_DOOR;
+         }
+ 
++        // Agent bridge: re-block co-located scenery (Door Track, etc.)
++        // when door closes
++        Object* obj = objectFindFirstAtLocation(door->elevation, door->tile);
++        while (obj != nullptr) {
++            if (obj != door && FID_TYPE(obj->fid) == OBJ_TYPE_SCENERY) {
++                obj->flags &= ~OBJECT_NO_BLOCK;
++            }
++            obj = objectFindNextAtLocation();
++        }
++
+         _obj_rebuild_all_light();
+         tileWindowRefresh();
+ 
+@@ -1669,6 +1679,16 @@ static int _check_door_state(Object* door, Object* obj2)
+             door->flags |= OBJECT_OPEN_DOOR;
+         }
+ 
++        // Agent bridge: unblock co-located scenery (Door Track, etc.)
++        // when door opens so pathfinding works through open doors
++        Object* obj = objectFindFirstAtLocation(door->elevation, door->tile);
++        while (obj != nullptr) {
++            if (obj != door && FID_TYPE(obj->fid) == OBJ_TYPE_SCENERY) {
++                obj->flags |= OBJECT_NO_BLOCK;
++            }
++            obj = objectFindNextAtLocation();
++        }
++
+         _obj_rebuild_all_light();
+         tileWindowRefresh();
+ 
+diff --git a/src/worldmap.cc b/src/worldmap.cc
+index 2929cc0..acb8eec 100644
+--- a/src/worldmap.cc
++++ b/src/worldmap.cc
+@@ -818,6 +818,13 @@ static int wmMaxEncBaseTypes;
+ static int wmMaxEncounterInfoTables;
+ 
+ static bool gTownMapHotkeysFix;
++
++// Agent bridge: pending map load request from the ticker (within worldmap loop)
++static int gAgentPendingMapLoad = -1;
++static int gAgentPendingMapElevation = 0;
++static int gAgentPendingMapTile = -1;
++static int gAgentPendingMapRotation = 0;
++
+ static double gGameTimeIncRemainder = 0.0;
+ static FrmImage _backgroundFrmImage;
+ static FrmImage _townFrmImage;
+@@ -3000,6 +3007,15 @@ static int wmWorldMapFunc(int a1)
+         // SFALL: WorldmapLoopHook.
+         sfall_gl_scr_process_worldmap();
+ 
++        // Agent bridge: check for pending map load request from ticker
++        if (gAgentPendingMapLoad >= 0) {
++            map = gAgentPendingMapLoad;
++            mapSetEnteringLocation(gAgentPendingMapElevation, gAgentPendingMapTile, gAgentPendingMapRotation);
++            gAgentPendingMapLoad = -1;
++            wmFadeOut();
++            mapLoadById(map);
++        }
++
+         unsigned int now = getTicks();
+ 
+         int mouseX;
+@@ -6671,4 +6687,81 @@ void wmForceEncounter(int map, unsigned int flags)
+     }
+ }
+ 
++// --- Agent bridge accessors ---
++
++int agentWmGetAreaCount()
++{
++    return wmMaxAreaNum;
++}
++
++int agentWmGetAreaInfo(int areaIdx, char* nameOut, int nameSize, int* xOut, int* yOut, int* stateOut, int* sizeOut)
++{
++    if (areaIdx < 0 || areaIdx >= wmMaxAreaNum || wmAreaInfoList == nullptr)
++        return -1;
++
++    CityInfo* city = &wmAreaInfoList[areaIdx];
++    if (nameOut != nullptr && nameSize > 0) {
++        strncpy(nameOut, city->name, nameSize - 1);
++        nameOut[nameSize - 1] = '\0';
++    }
++    if (xOut) *xOut = city->x;
++    if (yOut) *yOut = city->y;
++    if (stateOut) *stateOut = city->state;
++    if (sizeOut) *sizeOut = city->size;
++    return 0;
++}
++
++int agentWmGetAreaEntranceCount(int areaIdx)
++{
++    if (areaIdx < 0 || areaIdx >= wmMaxAreaNum || wmAreaInfoList == nullptr)
++        return 0;
++    return wmAreaInfoList[areaIdx].entrancesLength;
++}
++
++int agentWmGetAreaEntrance(int areaIdx, int entranceIdx, int* mapOut, int* elevOut, int* tileOut, int* stateOut)
++{
++    if (areaIdx < 0 || areaIdx >= wmMaxAreaNum || wmAreaInfoList == nullptr)
++        return -1;
++    CityInfo* city = &wmAreaInfoList[areaIdx];
++    if (entranceIdx < 0 || entranceIdx >= city->entrancesLength)
++        return -1;
++
++    EntranceInfo* ent = &city->entrances[entranceIdx];
++    if (mapOut) *mapOut = ent->map;
++    if (elevOut) *elevOut = ent->elevation;
++    if (tileOut) *tileOut = ent->tile;
++    if (stateOut) *stateOut = ent->state;
++    return 0;
++}
++
++bool agentWmIsWalking()
++{
++    return wmGenData.isWalking;
++}
++
++int agentWmGetWalkDestination(int* xOut, int* yOut)
++{
++    if (xOut) *xOut = wmGenData.walkDestinationX;
++    if (yOut) *yOut = wmGenData.walkDestinationY;
++    return 0;
++}
++
++bool agentWmIsInCar()
++{
++    return wmGenData.isInCar;
++}
++
++int agentWmGetCarFuel()
++{
++    return wmGenData.carFuel;
++}
++
++void agentWmRequestMapLoad(int mapIdx, int elevation, int tile, int rotation)
++{
++    gAgentPendingMapLoad = mapIdx;
++    gAgentPendingMapElevation = elevation;
++    gAgentPendingMapTile = tile;
++    gAgentPendingMapRotation = rotation;
++}
++
+ } // namespace fallout
+diff --git a/src/worldmap.h b/src/worldmap.h
+index 20ea1c2..4fff490 100644
+--- a/src/worldmap.h
++++ b/src/worldmap.h
+@@ -287,6 +287,19 @@ void wmSetPartyWorldPos(int x, int y);
+ void wmCarSetCurrentArea(int area);
+ void wmForceEncounter(int map, unsigned int flags);
+ 
++// Agent bridge: request map load from within worldmap loop
++void agentWmRequestMapLoad(int mapIdx, int elevation, int tile, int rotation);
++
++// Agent bridge accessors for world map data
++int agentWmGetAreaCount();
++int agentWmGetAreaInfo(int areaIdx, char* nameOut, int nameSize, int* xOut, int* yOut, int* stateOut, int* sizeOut);
++int agentWmGetAreaEntranceCount(int areaIdx);
++int agentWmGetAreaEntrance(int areaIdx, int entranceIdx, int* mapOut, int* elevOut, int* tileOut, int* stateOut);
++bool agentWmIsWalking();
++int agentWmGetWalkDestination(int* xOut, int* yOut);
++bool agentWmIsInCar();
++int agentWmGetCarFuel();
++
+ } // namespace fallout
+ 
+ #endif /* WORLD_MAP_H */
