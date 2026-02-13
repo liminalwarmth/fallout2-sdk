@@ -374,7 +374,6 @@ static void writeCharEditorState(json& state)
 
     state["character"] = character;
     state["available_actions"] = json::array({
-        "set_special", "select_traits", "tag_skills",
         "set_name", "finish_character_creation",
         "adjust_stat", "toggle_trait", "toggle_skill_tag", "editor_done",
         "skill_add", "skill_sub", "perk_add"

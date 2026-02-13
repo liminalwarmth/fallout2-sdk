@@ -40,6 +40,9 @@ const char* detectContext();
 const char* itemTypeToString(int type);
 const char* sceneryTypeToString(int type);
 
+// --- Explosive timer bypass ---
+extern int gAgentPendingExplosiveTimer;
+
 // --- Debug tracking ---
 
 extern std::string gAgentLastCommandDebug;

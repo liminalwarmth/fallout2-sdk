@@ -35,10 +35,13 @@
 #include "perk.h"
 #include "proto.h"
 #include "proto_instance.h"
+#include "text_object.h"
 #include "tile.h"
+#include "color.h"
 #include "queue.h"
 #include "random.h"
 #include "scripts.h"
+#include "pipboy.h"
 #include "worldmap.h"
 
 namespace fallout {
@@ -128,140 +131,12 @@ int getPendingAttackCount()
 #define CHAR_EDITOR_STAT_PLUS_BASE 503
 #define CHAR_EDITOR_STAT_MINUS_BASE 510
 #define CHAR_EDITOR_STAT_BTN_RELEASE 518
+#define CHAR_EDITOR_SKILL_PLUS 521
+#define CHAR_EDITOR_SKILL_MINUS 523
 #define CHAR_EDITOR_SKILL_TAG_BASE 536
 #define CHAR_EDITOR_TRAIT_BASE 555
 
 // --- Character creation handlers ---
-
-static void handleSetSpecial(const json& cmd)
-{
-    static const char* statNames[] = {
-        "strength", "perception", "endurance", "charisma",
-        "intelligence", "agility", "luck"
-    };
-    static const int statIds[] = {
-        STAT_STRENGTH, STAT_PERCEPTION, STAT_ENDURANCE, STAT_CHARISMA,
-        STAT_INTELLIGENCE, STAT_AGILITY, STAT_LUCK
-    };
-
-    int values[7];
-    int total = 0;
-
-    for (int i = 0; i < 7; i++) {
-        if (!cmd.contains(statNames[i]) || !cmd[statNames[i]].is_number_integer()) {
-            debugPrint("AgentBridge: set_special missing '%s'\n", statNames[i]);
-            return;
-        }
-        values[i] = cmd[statNames[i]].get<int>();
-        if (values[i] < PRIMARY_STAT_MIN || values[i] > PRIMARY_STAT_MAX) {
-            debugPrint("AgentBridge: set_special '%s' out of range (%d)\n", statNames[i], values[i]);
-            return;
-        }
-        total += values[i];
-    }
-
-    if (total != 40) {
-        debugPrint("AgentBridge: set_special total must be 40 (got %d)\n", total);
-        return;
-    }
-
-    for (int i = 0; i < 7; i++) {
-        critterSetBaseStat(gDude, statIds[i], values[i]);
-    }
-
-    gCharacterEditorRemainingCharacterPoints = 0;
-    critterUpdateDerivedStats(gDude);
-    debugPrint("AgentBridge: set_special applied\n");
-}
-
-static void handleSelectTraits(const json& cmd)
-{
-    if (!cmd.contains("traits") || !cmd["traits"].is_array()) {
-        debugPrint("AgentBridge: select_traits missing 'traits' array\n");
-        return;
-    }
-
-    auto& traitArr = cmd["traits"];
-    if (traitArr.size() > TRAITS_MAX_SELECTED_COUNT) {
-        debugPrint("AgentBridge: select_traits too many traits (max %d)\n", TRAITS_MAX_SELECTED_COUNT);
-        return;
-    }
-
-    int t1 = -1;
-    int t2 = -1;
-
-    for (size_t i = 0; i < traitArr.size(); i++) {
-        if (!traitArr[i].is_string()) {
-            debugPrint("AgentBridge: select_traits entry is not a string\n");
-            return;
-        }
-        std::string traitName = traitArr[i].get<std::string>();
-        auto it = gTraitNameToId.find(traitName);
-        if (it == gTraitNameToId.end()) {
-            debugPrint("AgentBridge: select_traits unknown trait '%s'\n", traitName.c_str());
-            return;
-        }
-        if (i == 0)
-            t1 = it->second;
-        else
-            t2 = it->second;
-    }
-
-    traitsSetSelected(t1, t2);
-
-    gCharacterEditorTempTraits[0] = t1;
-    gCharacterEditorTempTraits[1] = t2;
-    gCharacterEditorTempTraitCount = 0;
-    if (t2 == -1)
-        gCharacterEditorTempTraitCount++;
-    if (t1 == -1)
-        gCharacterEditorTempTraitCount++;
-
-    critterUpdateDerivedStats(gDude);
-    debugPrint("AgentBridge: select_traits applied (%d, %d)\n", t1, t2);
-}
-
-static void handleTagSkills(const json& cmd)
-{
-    if (!cmd.contains("skills") || !cmd["skills"].is_array()) {
-        debugPrint("AgentBridge: tag_skills missing 'skills' array\n");
-        return;
-    }
-
-    auto& skillArr = cmd["skills"];
-    if ((int)skillArr.size() != DEFAULT_TAGGED_SKILLS) {
-        debugPrint("AgentBridge: tag_skills requires exactly %d skills\n", DEFAULT_TAGGED_SKILLS);
-        return;
-    }
-
-    int skills[NUM_TAGGED_SKILLS];
-    for (int i = 0; i < NUM_TAGGED_SKILLS; i++) {
-        skills[i] = -1;
-    }
-
-    for (size_t i = 0; i < skillArr.size(); i++) {
-        if (!skillArr[i].is_string()) {
-            debugPrint("AgentBridge: tag_skills entry is not a string\n");
-            return;
-        }
-        std::string skillName = skillArr[i].get<std::string>();
-        auto it = gSkillNameToId.find(skillName);
-        if (it == gSkillNameToId.end()) {
-            debugPrint("AgentBridge: tag_skills unknown skill '%s'\n", skillName.c_str());
-            return;
-        }
-        skills[i] = it->second;
-    }
-
-    skillsSetTagged(skills, NUM_TAGGED_SKILLS);
-
-    for (int i = 0; i < NUM_TAGGED_SKILLS; i++) {
-        gCharacterEditorTempTaggedSkills[i] = skills[i];
-    }
-    gCharacterEditorTaggedSkillCount = 0;
-
-    debugPrint("AgentBridge: tag_skills applied\n");
-}
 
 static void handleSetName(const json& cmd)
 {
@@ -449,6 +324,13 @@ void agentProcessQueuedMovement()
         return;
     }
 
+    // Abort waypoints if combat started
+    if (isInCombat()) {
+        gMoveWaypointCount = 0;
+        debugPrint("AgentBridge: movement aborted — combat started\n");
+        return;
+    }
+
     if (animationIsBusy(gDude))
         return;
 
@@ -490,6 +372,15 @@ static void handleMoveTo(const json& cmd, bool run)
     }
 
     int tile = cmd["tile"].get<int>();
+
+    // Block exploration movement during combat — use combat_move instead
+    if (isInCombat()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%s: tile=%d rejected (in combat — use combat_move)", run ? "run_to" : "move_to", tile);
+        gAgentLastCommandDebug = buf;
+        debugPrint("AgentBridge: %s rejected — in combat\n", run ? "run_to" : "move_to");
+        return;
+    }
 
     // Cancel any existing queued movement
     gMoveWaypointCount = 0;
@@ -732,52 +623,14 @@ static void handleUseItemOn(const json& cmd)
 
     // If already adjacent (dist <= 2), call the use-item callback directly.
     // This avoids the animation chain failing silently when pathfinding can't
-    // find a route to an adjacent hex (common with wall-adjacent scenery like
-    // the Temple of Trials Impenetrable Door).
+    // find a route to an adjacent hex (common with wall-adjacent scenery).
     if (dist <= 2) {
         int rc = _obj_use_item_on(gDude, target, item);
         char buf[256];
-        snprintf(buf, sizeof(buf), "use_item_on(direct): pid=%d on id=%llu dist=%d item_sid=%d target_sid=%d rc=%d",
-            itemPid, (unsigned long long)objId, dist, item->sid, target->sid, rc);
+        snprintf(buf, sizeof(buf), "use_item_on(direct): pid=%d on id=%llu dist=%d rc=%d",
+            itemPid, (unsigned long long)objId, dist, rc);
         gAgentLastCommandDebug = buf;
         debugPrint("AgentBridge: %s\n", buf);
-
-        // Fallback: if _obj_use_item_on failed (rc != 0), try directly invoking
-        // the target's use_obj_on_p_proc script. This handles the case where the
-        // item has its own script that prevents the target script from running
-        // (e.g. Plastic Explosives on the Temple Impenetrable Door).
-        if (rc != 0 && target->sid != -1) {
-            // Re-fetch item in case _obj_use_item_on consumed it
-            item = objectGetCarriedObjectByPid(gDude, itemPid);
-            if (item != nullptr) {
-                debugPrint("AgentBridge: use_item_on fallback: invoking target script %d directly\n", target->sid);
-                scriptSetObjects(target->sid, gDude, item);
-                scriptExecProc(target->sid, SCRIPT_PROC_USE_OBJ_ON);
-
-                Script* script;
-                if (scriptGetScript(target->sid, &script) != -1 && script->scriptOverrides) {
-                    // Script handled it — remove the item from inventory
-                    itemRemove(gDude, item, 1);
-                    _obj_destroy(item);
-
-                    int leftItemAction, rightItemAction;
-                    interfaceGetItemActions(&leftItemAction, &rightItemAction);
-                    interfaceUpdateItems(false, INTERFACE_ITEM_ACTION_DEFAULT, INTERFACE_ITEM_ACTION_DEFAULT);
-
-                    snprintf(buf, sizeof(buf), "use_item_on(fallback): pid=%d target_sid=%d script_override=1 rv=%d",
-                        itemPid, target->sid, script->returnValue);
-                    gAgentLastCommandDebug = buf;
-                    debugPrint("AgentBridge: %s\n", buf);
-                } else {
-                    snprintf(buf, sizeof(buf), "use_item_on(fallback): pid=%d target_sid=%d no_override",
-                        itemPid, target->sid);
-                    gAgentLastCommandDebug = buf;
-                    debugPrint("AgentBridge: %s\n", buf);
-                }
-
-                scriptsExecMapUpdateProc();
-            }
-        }
     } else {
         _action_use_an_item_on_object(gDude, target, item);
         char buf[196];
@@ -909,79 +762,38 @@ static void handleUseItem(const json& cmd)
     }
 }
 
-// --- Arm explosive (bypasses timer dialog) ---
+// --- Use equipped item (player-like: equip to hand → use from game screen) ---
 
-static void handleArmExplosive(const json& cmd)
+static void handleUseEquippedItem(const json& cmd)
 {
-    if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
-        gAgentLastCommandDebug = "arm_explosive: missing 'item_pid'";
+    Object* item = nullptr;
+    if (interfaceGetActiveItem(&item) == -1 || item == nullptr) {
+        gAgentLastCommandDebug = "use_equipped_item: no item in active hand";
         return;
     }
 
-    int itemPid = cmd["item_pid"].get<int>();
-    Object* item = objectGetCarriedObjectByPid(gDude, itemPid);
-    if (item == nullptr) {
-        gAgentLastCommandDebug = "arm_explosive: pid " + std::to_string(itemPid) + " not found";
-        return;
+    // For explosives, pre-set the timer so _inven_set_timer returns immediately
+    // instead of showing a blocking dialog
+    if (explosiveIsExplosive(item->pid)) {
+        int seconds = 30;
+        if (cmd.contains("timer_seconds") && cmd["timer_seconds"].is_number_integer()) {
+            seconds = cmd["timer_seconds"].get<int>();
+            if (seconds < 10) seconds = 10;
+            if (seconds > 180) seconds = 180;
+            seconds = (seconds / 10) * 10;
+        }
+        gAgentPendingExplosiveTimer = seconds;
     }
 
-    if (!explosiveIsExplosive(item->pid)) {
-        gAgentLastCommandDebug = "arm_explosive: pid " + std::to_string(itemPid) + " is not an explosive";
-        return;
-    }
+    // Cache pid before _obj_use_item — it can destroy/replace the item object
+    int itemPid = item->pid;
 
-    if ((item->flags & OBJECT_QUEUED) != 0) {
-        gAgentLastCommandDebug = "arm_explosive: timer already ticking";
-        return;
-    }
+    // Call through the real engine item-use path
+    int rc = _obj_use_item(gDude, item);
+    interfaceUpdateItems(false, INTERFACE_ITEM_ACTION_DEFAULT, INTERFACE_ITEM_ACTION_DEFAULT);
 
-    // Timer seconds — must be multiple of 10, range [10, 180]
-    int seconds = 30;
-    if (cmd.contains("seconds") && cmd["seconds"].is_number_integer()) {
-        seconds = cmd["seconds"].get<int>();
-        if (seconds < 10) seconds = 10;
-        if (seconds > 180) seconds = 180;
-        seconds = (seconds / 10) * 10;
-    }
-
-    // Activate PID (inactive → active)
-    explosiveActivate(&(item->pid));
-
-    int delay = 10 * seconds;
-
-    // Skill roll determines explosion quality
-    int roll;
-    if (perkHasRank(gDude, PERK_DEMOLITION_EXPERT)) {
-        roll = ROLL_SUCCESS;
-    } else {
-        roll = skillRoll(gDude, SKILL_TRAPS, 0, nullptr);
-    }
-
-    int eventType;
-    switch (roll) {
-    case ROLL_CRITICAL_FAILURE:
-        delay = 0;
-        eventType = EVENT_TYPE_EXPLOSION_FAILURE;
-        break;
-    case ROLL_FAILURE:
-        eventType = EVENT_TYPE_EXPLOSION_FAILURE;
-        delay /= 2;
-        break;
-    default:
-        eventType = EVENT_TYPE_EXPLOSION;
-        break;
-    }
-
-    // Remove from inventory and place on ground at player's feet
-    itemRemove(gDude, item, 1);
-    objectSetLocation(item, gDude->tile, gDude->elevation, nullptr);
-
-    // Queue the explosion event
-    queueAddEvent(delay, item, nullptr, eventType);
-
-    char buf[196];
-    snprintf(buf, sizeof(buf), "arm_explosive: pid=%d timer=%ds delay=%d ticks roll=%d placed at tile %d",
-        itemPid, seconds, delay, roll, gDude->tile);
+    char buf[256];
+    snprintf(buf, sizeof(buf), "use_equipped_item: pid=%d rc=%d", itemPid, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
 }
@@ -1918,9 +1730,13 @@ static void handleWorldmapTravel(const json& cmd)
         wmAreaSetVisibleState(areaId, CITY_STATE_KNOWN, true);
     }
 
-    int rc = wmTeleportToArea(areaId);
+    // Initiate walking (player-like) instead of teleporting.
+    // The engine handles walking naturally: wmPartyWalkingStep() moves
+    // incrementally per frame, wmRndEncounterOccurred() checks for random
+    // encounters, and arrival is detected when walkDistance <= 0.
+    int rc = agentWmStartWalkingToArea(areaId);
     char buf[128];
-    snprintf(buf, sizeof(buf), "worldmap_travel: teleported to area %d rc=%d", areaId, rc);
+    snprintf(buf, sizeof(buf), "worldmap_travel: walking to area %d rc=%d", areaId, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
 }
@@ -1977,7 +1793,7 @@ static void handleWorldmapEnterLocation(const json& cmd)
     debugPrint("AgentBridge: %s\n", buf);
 }
 
-// --- Level-up commands ---
+// --- Level-up commands (player-like: work through character editor UI) ---
 
 static void handleSkillAdd(const json& cmd)
 {
@@ -1994,13 +1810,16 @@ static void handleSkillAdd(const json& cmd)
     }
 
     int skillId = it->second;
-    int oldValue = skillGetValue(gDude, skillId);
-    int rc = skillAdd(gDude, skillId);
+
+    // Set the editor's current skill selection, then inject the "+" button event.
+    // The editor's characterEditorHandleAdjustSkillButtonPressed() will call
+    // skillAdd(gDude, gCharacterEditorCurrentSkill) on the next inputGetInput().
+    agentEditorSetCurrentSkill(skillId);
+    enqueueInputEvent(CHAR_EDITOR_SKILL_PLUS);
 
     char buf[128];
-    snprintf(buf, sizeof(buf), "skill_add: %s %d->%d sp=%d rc=%d",
-        skillName.c_str(), oldValue, skillGetValue(gDude, skillId),
-        pcGetStat(PC_STAT_UNSPENT_SKILL_POINTS), rc);
+    snprintf(buf, sizeof(buf), "skill_add: %s (injected button event, skill=%d sp=%d)",
+        skillName.c_str(), skillId, pcGetStat(PC_STAT_UNSPENT_SKILL_POINTS));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
 }
@@ -2020,13 +1839,14 @@ static void handleSkillSub(const json& cmd)
     }
 
     int skillId = it->second;
-    int oldValue = skillGetValue(gDude, skillId);
-    int rc = skillSub(gDude, skillId);
+
+    // Set the editor's current skill selection, then inject the "-" button event.
+    agentEditorSetCurrentSkill(skillId);
+    enqueueInputEvent(CHAR_EDITOR_SKILL_MINUS);
 
     char buf[128];
-    snprintf(buf, sizeof(buf), "skill_sub: %s %d->%d sp=%d rc=%d",
-        skillName.c_str(), oldValue, skillGetValue(gDude, skillId),
-        pcGetStat(PC_STAT_UNSPENT_SKILL_POINTS), rc);
+    snprintf(buf, sizeof(buf), "skill_sub: %s (injected button event, skill=%d sp=%d)",
+        skillName.c_str(), skillId, pcGetStat(PC_STAT_UNSPENT_SKILL_POINTS));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
 }
@@ -2044,13 +1864,24 @@ static void handlePerkAdd(const json& cmd)
         return;
     }
 
-    char* pName = perkGetName(perkId);
-    int oldRank = perkGetRank(gDude, perkId);
-    int rc = perkAdd(gDude, perkId);
+    // Guard: only act when the perk dialog is open (i.e., editor has a free perk)
+    if (!agentEditorHasFreePerk()) {
+        gAgentLastCommandDebug = "perk_add: no free perk available (is perk dialog open?)";
+        return;
+    }
 
+    // Position the perk dialog selection and inject KEY_RETURN to confirm.
+    // The perk dialog's perkDialogHandleInput() processes KEY_RETURN as "Done".
+    int rc = agentEditorSelectPerk(perkId);
+    char* pName = perkGetName(perkId);
     char buf[128];
-    snprintf(buf, sizeof(buf), "perk_add: %s (id=%d) rank %d->%d rc=%d",
-        pName ? pName : "?", perkId, oldRank, perkGetRank(gDude, perkId), rc);
+    if (rc == -1) {
+        snprintf(buf, sizeof(buf), "perk_add: %s (id=%d) not available in dialog",
+            pName ? pName : "?", perkId);
+    } else {
+        snprintf(buf, sizeof(buf), "perk_add: %s (id=%d) selected in dialog (injected RETURN)",
+            pName ? pName : "?", perkId);
+    }
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
 }
@@ -2265,49 +2096,11 @@ void processCommands()
         return;
     }
 
-    // Separate commands into ordered batches for character creation
-    std::vector<const json*> setSpecialCmds;
-    std::vector<const json*> selectTraitsCmds;
-    std::vector<const json*> tagSkillsCmds;
-    std::vector<const json*> setNameCmds;
-    std::vector<const json*> finishCmds;
-    std::vector<const json*> otherCmds;
-
+    // Process all commands in order
     for (const auto& cmd : doc["commands"]) {
         if (!cmd.contains("type") || !cmd["type"].is_string())
             continue;
 
-        std::string type = cmd["type"].get<std::string>();
-
-        if (type == "set_special")
-            setSpecialCmds.push_back(&cmd);
-        else if (type == "select_traits")
-            selectTraitsCmds.push_back(&cmd);
-        else if (type == "tag_skills")
-            tagSkillsCmds.push_back(&cmd);
-        else if (type == "set_name")
-            setNameCmds.push_back(&cmd);
-        else if (type == "finish_character_creation")
-            finishCmds.push_back(&cmd);
-        else
-            otherCmds.push_back(&cmd);
-    }
-
-    // Process character creation commands in correct order
-    for (const auto* cmd : setSpecialCmds)
-        handleSetSpecial(*cmd);
-    for (const auto* cmd : selectTraitsCmds)
-        handleSelectTraits(*cmd);
-    for (const auto* cmd : tagSkillsCmds)
-        handleTagSkills(*cmd);
-    for (const auto* cmd : setNameCmds)
-        handleSetName(*cmd);
-    for (const auto* cmd : finishCmds)
-        handleFinishCharacterCreation();
-
-    // Process all other commands
-    for (const auto* cmdPtr : otherCmds) {
-        const auto& cmd = *cmdPtr;
         std::string type = cmd["type"].get<std::string>();
 
         // Skip command — works during movies by injecting an input event
@@ -2392,7 +2185,9 @@ void processCommands()
             handleToggleTrait(cmd);
         } else if (type == "toggle_skill_tag") {
             handleToggleSkillTag(cmd);
-        } else if (type == "editor_done") {
+        } else if (type == "set_name") {
+            handleSetName(cmd);
+        } else if (type == "editor_done" || type == "finish_character_creation") {
             handleFinishCharacterCreation();
         }
         // Menu commands
@@ -2433,7 +2228,7 @@ void processCommands()
             gAgentLastCommandDebug = "center_camera: tile=" + std::to_string(gDude->tile);
             debugPrint("AgentBridge: center_camera on tile %d\n", gDude->tile);
         } else if (type == "rest") {
-            // Direct rest: advance game time and heal
+            // Headless rest: incremental time advancement with event processing
             if (isInCombat()) {
                 gAgentLastCommandDebug = "rest: cannot rest in combat";
             } else if (!_critter_can_obj_dude_rest()) {
@@ -2445,17 +2240,12 @@ void processCommands()
                     if (hours < 1) hours = 1;
                     if (hours > 24) hours = 24;
                 }
-                // Advance game time
-                unsigned int currentTime = gameTimeGetTime();
-                gameTimeSetTime(currentTime + hours * GAME_TIME_TICKS_PER_HOUR);
-                // Process timed events (scripts, etc.)
-                queueProcessEvents();
-                // Heal party (includes gDude)
-                _partyMemberRestingHeal(hours);
+                bool interrupted = agentRest(hours, 0);
                 int hp = critterGetHitPoints(gDude);
                 int maxHp = critterGetStat(gDude, STAT_MAXIMUM_HIT_POINTS);
                 char buf[128];
-                snprintf(buf, sizeof(buf), "rest: %d hours, hp=%d/%d", hours, hp, maxHp);
+                snprintf(buf, sizeof(buf), "rest: %d hours%s hp=%d/%d",
+                    hours, interrupted ? " (interrupted)" : "", hp, maxHp);
                 gAgentLastCommandDebug = buf;
                 debugPrint("AgentBridge: %s\n", buf);
             }
@@ -2494,8 +2284,8 @@ void processCommands()
             handleUnequipItem(cmd);
         } else if (type == "use_item") {
             handleUseItem(cmd);
-        } else if (type == "arm_explosive") {
-            handleArmExplosive(cmd);
+        } else if (type == "use_equipped_item") {
+            handleUseEquippedItem(cmd);
         }
         // Combat commands
         else if (type == "attack") {
@@ -2689,6 +2479,26 @@ void processCommands()
                 enqueueInputEvent(keyCode);
                 gAgentLastCommandDebug = "input_event: code=" + std::to_string(keyCode);
                 debugPrint("AgentBridge: input_event code=%d\n", keyCode);
+            }
+        }
+        // Float thought text above player's head
+        else if (type == "float_thought") {
+            if (cmd.contains("text") && cmd["text"].is_string()) {
+                std::string text = cmd["text"].get<std::string>();
+                if (!text.empty() && gDude != nullptr) {
+                    // Claude orange text (#DA7756), black outline — distinct from yellow NPC speech
+                    Rect rect;
+                    char* buf = strdup(text.c_str());
+                    if (textObjectAdd(gDude, buf, 101, _colorTable[28106], _colorTable[0], &rect) == 0) {
+                        tileWindowRefreshRect(&rect, gElevation);
+                    }
+                    free(buf);
+                    gAgentLastCommandDebug = "float_thought: " + text.substr(0, 40);
+                } else {
+                    gAgentLastCommandDebug = "float_thought: empty text or no player";
+                }
+            } else {
+                gAgentLastCommandDebug = "float_thought: missing text field";
             }
         }
         // Test mode toggle

@@ -157,37 +157,61 @@ print(f'     SPECIAL: {json.dumps(char.get(\"special\", {}))}')
 "
 echo ""
 
-# 5. Configure character
+# 5. Configure character using player-like button events
 echo "--- Phase 5: Configure Character ---"
 echo "   Target: Name=Claude, S6/P8/E4/C4/I9/A6/L3, Gifted+SmallFrame, SmallGuns+Speech+Lockpick"
 echo ""
-echo "   Step 5a: set_special..."
-send_cmd '{
-    "commands": [{
-        "type": "set_special",
-        "strength": 6, "perception": 8, "endurance": 4,
-        "charisma": 4, "intelligence": 9, "agility": 6, "luck": 3
-    }]
-}'
-sleep 0.5
 
-echo "   Step 5b: select_traits..."
-send_cmd '{
-    "commands": [{
-        "type": "select_traits",
-        "traits": ["gifted", "small_frame"]
-    }]
-}'
+# Default SPECIAL is 5/5/5/5/5/5/5 = 35, target S6/P8/E4/C4/I9/A6/L3 = 40
+# Adjustments from default: S+1, P+3, E-1, C-1, I+4, A+1, L-2
+echo "   Step 5a: adjust stats via button events..."
+# Strength: 5 → 6 (+1)
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"strength","direction":"up"}]}'
 sleep 0.5
+# Perception: 5 → 8 (+3)
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"perception","direction":"up"}]}'
+sleep 0.5
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"perception","direction":"up"}]}'
+sleep 0.5
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"perception","direction":"up"}]}'
+sleep 0.5
+# Endurance: 5 → 4 (-1)
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"endurance","direction":"down"}]}'
+sleep 0.5
+# Charisma: 5 → 4 (-1)
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"charisma","direction":"down"}]}'
+sleep 0.5
+# Intelligence: 5 → 9 (+4)
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"intelligence","direction":"up"}]}'
+sleep 0.5
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"intelligence","direction":"up"}]}'
+sleep 0.5
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"intelligence","direction":"up"}]}'
+sleep 0.5
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"intelligence","direction":"up"}]}'
+sleep 0.5
+# Agility: 5 → 6 (+1)
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"agility","direction":"up"}]}'
+sleep 0.5
+# Luck: 5 → 3 (-2)
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"luck","direction":"down"}]}'
+sleep 0.5
+send_cmd '{"commands":[{"type":"adjust_stat","stat":"luck","direction":"down"}]}'
+sleep 1
 
-echo "   Step 5c: tag_skills..."
-send_cmd '{
-    "commands": [{
-        "type": "tag_skills",
-        "skills": ["small_guns", "speech", "lockpick"]
-    }]
-}'
+echo "   Step 5b: toggle traits via button events..."
+send_cmd '{"commands":[{"type":"toggle_trait","trait":"gifted"}]}'
 sleep 0.5
+send_cmd '{"commands":[{"type":"toggle_trait","trait":"small_frame"}]}'
+sleep 1
+
+echo "   Step 5c: toggle tagged skills via button events..."
+send_cmd '{"commands":[{"type":"toggle_skill_tag","skill":"small_guns"}]}'
+sleep 0.5
+send_cmd '{"commands":[{"type":"toggle_skill_tag","skill":"speech"}]}'
+sleep 0.5
+send_cmd '{"commands":[{"type":"toggle_skill_tag","skill":"lockpick"}]}'
+sleep 1
 
 echo "   Step 5d: set_name..."
 send_cmd '{

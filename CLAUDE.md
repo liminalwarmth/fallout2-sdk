@@ -11,7 +11,8 @@
 - NEVER commit directly to `engine/fallout2-ce/` — use the patch workflow below
 - NEVER add changelog-style entries to this file — keep it under 150 lines
 - Gotchas are in MEMORY.md (always loaded) — check there first, add new ones there
-- For gameplay testing, spawn a Task subagent: include the contents of `docs/claude/mode-play.md` in its prompt plus the specific gameplay objective
+- ALWAYS implement game interactions the way a player would: equip items to hand slots, use them from the game screen, press keys, select dialogue options — not by directly calling internal engine methods or hacking game state. Only bypass a UI element (e.g., a blocking modal dialog) when there is no scriptable alternative, and document why.
+- For gameplay, read `docs/claude/mode-play.md` then play directly in the main context (do NOT use subagents — gameplay needs full reasoning power)
 
 ## Architecture
 
@@ -56,8 +57,11 @@ WebKit style via clang-format: 4 spaces, UTF-8, LF. `AllowShortIfStatementsOnASi
 - `scripts/` — setup, test, and executor scripts
 - `game/` — game data + runtime JSON files (git-ignored)
 - `game/knowledge/` — persistent gameplay knowledge files
+- `game/persona.md` — active character persona (runtime, git-ignored)
+- `game/thought_log.md` — append-only reasoning log (runtime, git-ignored)
 - `docs/` — technical spec, gameplay guide, journal
-- `docs/claude/mode-play.md` — play-mode briefing for gameplay subagents
+- `docs/default-persona.md` — default persona template (copied to `game/persona.md` on first session)
+- `docs/claude/mode-play.md` — play-mode briefing (read before gameplay sessions)
 
 ## Engine Patches
 

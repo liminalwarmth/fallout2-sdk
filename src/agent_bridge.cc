@@ -33,6 +33,7 @@ int gAgentContext = AGENT_CONTEXT_UNKNOWN;
 int gAgentMainMenuAction = 0;
 int gAgentPendingLoadSlot = -1;
 bool gAgentTestMode = false;
+int gAgentPendingExplosiveTimer = 0;
 
 std::unordered_map<std::string, int> gKeyNameToScancode;
 std::unordered_map<std::string, int> gStatNameToId;

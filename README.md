@@ -138,6 +138,7 @@ The agent bridge hooks into the Fallout 2 CE engine to provide two-way JSON comm
 
 - **State emission** (`game/agent_state.json`) — player stats/skills/perks, map/objects, inventory, combat (AP, hostiles, hit chances), dialogue, barter, world map, quests, party, message log, game time — across 11 fine-grained contexts
 - **Command input** (`game/agent_cmd.json`) — 50+ commands for exploration, combat, dialogue, inventory, barter, world map, level-up, save/load, and character creation
+- **Muse system** — floating orange text above the player's head renders Claude's inner monologue in real-time, spoken in the character's persona voice with complexity scaled to the character's Intelligence stat (INT 1-3: simple fragments, INT 9-10: eloquent prose)
 
 Key integration points: ticker callback (per-tick state/commands), context hooks (`mainmenu.cc`, `character_selector.cc`, `character_editor.cc`, `main.cc`), animation system (`reg_anim_*`), action system (`actionPickUp`, `actionUseSkill`, etc.), and custom accessor functions for static engine state.
 

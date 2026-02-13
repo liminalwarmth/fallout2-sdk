@@ -38,7 +38,7 @@ index 5e03941..c2bc37c 100644
      if(IOS)
          install(TARGETS ${EXECUTABLE_NAME} DESTINATION "Payload")
 diff --git a/src/character_editor.cc b/src/character_editor.cc
-index 0d989a7..b674bcd 100644
+index 0d989a7..9e5c730 100644
 --- a/src/character_editor.cc
 +++ b/src/character_editor.cc
 @@ -8,6 +8,10 @@
@@ -87,8 +87,45 @@ index 0d989a7..b674bcd 100644
      if (!gCharacterEditorIsCreationMode) {
          if (characterEditorUpdateLevel()) {
              critterUpdateDerivedStats(gDude);
+@@ -7303,4 +7311,36 @@ static void customTownReputationFree()
+     gCustomTownReputationEntries.clear();
+ }
+ 
++// --- Agent bridge accessor functions ---
++
++int agentEditorGetCurrentSkill()
++{
++    return gCharacterEditorCurrentSkill;
++}
++
++void agentEditorSetCurrentSkill(int skill)
++{
++    gCharacterEditorCurrentSkill = skill;
++}
++
++bool agentEditorHasFreePerk()
++{
++    return gCharacterEditorHasFreePerk != 0;
++}
++
++int agentEditorSelectPerk(int perkId)
++{
++    for (int i = 0; i < DIALOG_PICKER_NUM_OPTIONS; i++) {
++        if (gPerkDialogOptionList[i].name == nullptr)
++            break;
++        if (gPerkDialogOptionList[i].value == perkId) {
++            gPerkDialogTopLine = i;
++            gPerkDialogCurrentLine = 0;
++            enqueueInputEvent(KEY_RETURN);
++            return 0;
++        }
++    }
++    return -1; // perk not found in available list
++}
++
+ } // namespace fallout
 diff --git a/src/character_editor.h b/src/character_editor.h
-index af69e84..be773fb 100644
+index af69e84..00d19f1 100644
 --- a/src/character_editor.h
 +++ b/src/character_editor.h
 @@ -6,6 +6,10 @@
@@ -102,6 +139,19 @@ index af69e84..be773fb 100644
  
  int characterEditorShow(bool isCreationMode);
  void characterEditorInit();
+@@ -15,6 +19,12 @@ int characterEditorSave(File* stream);
+ int characterEditorLoad(File* stream);
+ void characterEditorReset();
+ 
++// Agent bridge: character editor accessors
++int agentEditorGetCurrentSkill();
++void agentEditorSetCurrentSkill(int skill);
++bool agentEditorHasFreePerk();
++int agentEditorSelectPerk(int perkId);
++
+ } // namespace fallout
+ 
+ #endif /* CHARACTER_EDITOR_H */
 diff --git a/src/character_selector.cc b/src/character_selector.cc
 index 76d3ea4..e6ddb9e 100644
 --- a/src/character_selector.cc
@@ -325,6 +375,27 @@ index 0dccf6b..94830a9 100644
  } // namespace fallout
  
  #endif /* GAME_DIALOG_H */
+diff --git a/src/inventory.cc b/src/inventory.cc
+index 7afc8cf..3235051 100644
+--- a/src/inventory.cc
++++ b/src/inventory.cc
+@@ -5970,6 +5970,16 @@ static int inventoryQuantityWindowFree(int inventoryWindowType)
+ // 0x477074
+ int _inven_set_timer(Object* item)
+ {
++#ifdef AGENT_BRIDGE
++    // Agent bridge: accept pre-set timer to avoid blocking dialog
++    extern int gAgentPendingExplosiveTimer;
++    if (gAgentPendingExplosiveTimer > 0) {
++        int result = gAgentPendingExplosiveTimer;
++        gAgentPendingExplosiveTimer = 0;
++        return result;
++    }
++#endif
++
+     bool isInitialized = _inven_is_initialized;
+ 
+     if (!isInitialized) {
 diff --git a/src/loadsave.cc b/src/loadsave.cc
 index f352c35..1538fb4 100644
 --- a/src/loadsave.cc
@@ -620,10 +691,10 @@ index bc0bf0a..4e4e67e 100644
              if (keyCode == gMainMenuButtonKeyBindings[buttonIndex] || keyCode == toupper(gMainMenuButtonKeyBindings[buttonIndex])) {
                  // NOTE: Uninline.
 diff --git a/src/pipboy.cc b/src/pipboy.cc
-index 9327894..2eecc96 100644
+index 9327894..d305c60 100644
 --- a/src/pipboy.cc
 +++ b/src/pipboy.cc
-@@ -2605,4 +2605,98 @@ static void holodiskFree()
+@@ -2605,4 +2605,156 @@ static void holodiskFree()
      gHolodisksCount = 0;
  }
  
@@ -721,12 +792,70 @@ index 9327894..2eecc96 100644
 +    return nullptr;
 +}
 +
++// Agent bridge: headless rest (no Pip-Boy UI, but same game logic)
++bool agentRest(int hours, int minutes)
++{
++    if (!_critter_can_obj_dude_rest())
++        return false;
++
++    _rest_time = 0;
++
++    int totalMinutes = hours * 60 + minutes;
++    unsigned int gameTime = gameTimeGetTime();
++
++    // Process minutes portion first (matching pipboyRest structure)
++    if (minutes > 0) {
++        unsigned int minuteEnd = gameTime + (unsigned int)minutes * 600;
++        unsigned int nextEvent = queueGetNextEventTime();
++        while (nextEvent <= minuteEnd) {
++            gameTimeSetTime(nextEvent + 1);
++            if (queueProcessEvents()) {
++                return true; // interrupted
++            }
++            nextEvent = queueGetNextEventTime();
++        }
++        gameTimeSetTime(minuteEnd);
++
++        if (_Check4Health(minutes)) {
++            _AddHealth();
++        }
++    }
++
++    // Process hours in 10-minute increments for event granularity
++    if (hours > 0) {
++        int hoursMinutes = hours * 60;
++        unsigned int hourStart = gameTime + (unsigned int)minutes * 600;
++
++        for (int elapsed = 0; elapsed < hoursMinutes; elapsed += 10) {
++            int step = (hoursMinutes - elapsed < 10) ? (hoursMinutes - elapsed) : 10;
++            unsigned int targetTime = hourStart + (unsigned int)(elapsed + step) * 600;
++
++            unsigned int nextEvent = queueGetNextEventTime();
++            while (nextEvent <= targetTime) {
++                gameTimeSetTime(nextEvent + 1);
++                if (queueProcessEvents()) {
++                    return true; // interrupted
++                }
++                nextEvent = queueGetNextEventTime();
++            }
++
++            gameTimeSetTime(targetTime);
++
++            if (_Check4Health(step)) {
++                _AddHealth();
++            }
++        }
++    }
++
++    return false; // not interrupted
++}
++
  } // namespace fallout
 diff --git a/src/pipboy.h b/src/pipboy.h
-index bd17f64..6f8e55b 100644
+index bd17f64..5ced60e 100644
 --- a/src/pipboy.h
 +++ b/src/pipboy.h
-@@ -16,6 +16,21 @@ void pipboyReset();
+@@ -16,6 +16,24 @@ void pipboyReset();
  int pipboySave(File* stream);
  int pipboyLoad(File* stream);
  
@@ -740,6 +869,9 @@ index bd17f64..6f8e55b 100644
 +int agentGetQuestCompletedThreshold(int index);
 +const char* agentGetQuestDescriptionText(int index);
 +const char* agentGetQuestLocationText(int index);
++
++// Agent bridge: headless rest (no Pip-Boy UI)
++bool agentRest(int hours, int minutes);
 +
 +int agentGetHolodiskCount();
 +int agentGetHolodiskGvar(int index);
@@ -786,8 +918,24 @@ index 02bb39d..f162b21 100644
          _obj_rebuild_all_light();
          tileWindowRefresh();
  
+diff --git a/src/queue.cc b/src/queue.cc
+index 9056904..03ffc34 100644
+--- a/src/queue.cc
++++ b/src/queue.cc
+@@ -486,6 +486,11 @@ static int _queue_do_explosion_(Object* explosive, bool animate)
+     if (actionExplode(tile, elevation, minDamage, maxDamage, gDude, animate) == -2) {
+         queueAddEvent(50, explosive, nullptr, EVENT_TYPE_EXPLOSION);
+     } else {
++        // Destroy nearby scenery (doors, etc.) — matches combat explosion behavior
++        // in _combat_explode_scenery. Without this, timed explosives only damage
++        // critters but never destroy scenery like the Temple Impenetrable Door.
++        _scr_explode_scenery(gDude, tile, weaponGetRocketExplosionRadius(nullptr), elevation);
++
+         _obj_destroy(explosive);
+     }
+ 
 diff --git a/src/worldmap.cc b/src/worldmap.cc
-index 2929cc0..acb8eec 100644
+index 2929cc0..49e8304 100644
 --- a/src/worldmap.cc
 +++ b/src/worldmap.cc
 @@ -818,6 +818,13 @@ static int wmMaxEncBaseTypes;
@@ -820,7 +968,7 @@ index 2929cc0..acb8eec 100644
          unsigned int now = getTicks();
  
          int mouseX;
-@@ -6671,4 +6687,81 @@ void wmForceEncounter(int map, unsigned int flags)
+@@ -6671,4 +6687,100 @@ void wmForceEncounter(int map, unsigned int flags)
      }
  }
  
@@ -901,17 +1049,39 @@ index 2929cc0..acb8eec 100644
 +    gAgentPendingMapRotation = rotation;
 +}
 +
++int agentWmStartWalkingToArea(int areaId)
++{
++    if (areaId < 0 || areaId >= wmMaxAreaNum || wmAreaInfoList == nullptr)
++        return -1;
++    if (wmGenData.currentAreaId == areaId)
++        return -3; // already there
++
++    CityInfo* city = &(wmAreaInfoList[areaId]);
++    CitySizeDescription* citySizeDescription = &(wmSphereData[city->size]);
++
++    // Replicate the same coordinate calculation used by Ctrl+F1..F7 hotkeys
++    int destX = city->x + citySizeDescription->frmImage.getWidth() / 2 - WM_VIEW_X;
++    int destY = city->y + citySizeDescription->frmImage.getHeight() / 2 - WM_VIEW_Y;
++
++    wmPartyInitWalking(destX, destY);
++    wmGenData.mousePressed = false;
++    return 0;
++}
++
  } // namespace fallout
 diff --git a/src/worldmap.h b/src/worldmap.h
-index 20ea1c2..4fff490 100644
+index 20ea1c2..4131ff5 100644
 --- a/src/worldmap.h
 +++ b/src/worldmap.h
-@@ -287,6 +287,19 @@ void wmSetPartyWorldPos(int x, int y);
+@@ -287,6 +287,22 @@ void wmSetPartyWorldPos(int x, int y);
  void wmCarSetCurrentArea(int area);
  void wmForceEncounter(int map, unsigned int flags);
  
 +// Agent bridge: request map load from within worldmap loop
 +void agentWmRequestMapLoad(int mapIdx, int elevation, int tile, int rotation);
++
++// Agent bridge: initiate walking to an area (player-like travel)
++int agentWmStartWalkingToArea(int areaId);
 +
 +// Agent bridge accessors for world map data
 +int agentWmGetAreaCount();
