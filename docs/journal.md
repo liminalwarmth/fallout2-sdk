@@ -1,5 +1,107 @@
 # Session Journal
 
+## 2026-02-13: The Den — Found Vic, Need Radio Parts
+
+### Navigation to The Den
+- Traveled from Klamath via worldmap. DENBUS1.MAP → DENBUS2.MAP transition via exit grids.
+- Entered slaver compound through door at tile 19880. Aidan (slaver) auto-initiated dialogue.
+
+### Slaver Compound Navigation (DENBUS2.MAP)
+- Compound is a maze of walled rooms connected by doors
+- Key doors found: 16680 (unlocked, leads to Metzger corridor), 17274 (locked, leads to Vic's cell)
+- **Critical bug**: `use_object` requires `object_id` field, NOT `id`. Using `id` silently fails (no debug output).
+- **Animation stuck bug**: Pathfinding to Metzger (tile 15278) started animation but got blocked by critter at 15481. Animation stayed busy indefinitely. Fixed by quicksave/quickload.
+- **Quickload triggers Metzger dialogue**: Loading from save while in Metzger's room auto-triggers his dialogue.
+- **talk_to from inside compound = combat**: Using `talk_to` on Vic from inside the compound triggered full-map combat (70+ combatants). The walk action goes through hostile slaver territory.
+
+### Talking to Vic (Outside Route)
+- **Solution**: Access Vic from OUTSIDE the compound! Walk around the building.
+- Path: 16880 → 17080 → 17480 → 17880 → 18281 → south loop → 17267 (3 tiles from Vic)
+- Vic dialogue through wall at dist 3:
+  - Metzger is holding him until he fixes a radio
+  - Radio crystal is broken, needs spare parts
+  - Old radio with matching parts is in **Vic's shack in Klamath, east of Duntons' place**
+  - Vic knows about Vault 13 but will only tell after being freed
+
+### Metzger Dialogue
+- "What the fuck do you want?" opening
+- Options: sell items (no, slaves only), join guild (permanent forehead tattoo — declined), learn about guild
+- No dialogue option about buying Vic — probably needs radio parts first
+
+### Key Learnings
+1. Always use `object_id` not `id` for `use_object`, `talk_to`, `use_skill` commands
+2. Use helper functions (`use_object_and_wait`, etc.) instead of raw JSON writes
+3. Approach Vic's cell from outside the compound, not through the slaver areas
+4. Door 17274 (to Vic) is locked — lockpick 35% failed 10x, lock is too hard
+
+### Current State
+- **Location**: DENBUS2.MAP tile 17267 (outside Vic's cell)
+- **HP**: 30/30
+- **Level**: 1
+- **Save**: Slot 3
+- **Next**: Travel to Klamath, find Vic's shack (east of Duntons), get radio parts, return to Den
+
+---
+
+## 2026-02-13: Dialogue Features + Klamath Exploration (continued)
+
+### User Feature Requests Implemented
+
+1. **Dialogue Option Highlighting**: When `select_dialogue` is called, the chosen option is now visually highlighted for ~0.5s before the key is injected. Implementation: `agentDialogHighlightOption()` accessor in `game_dialog.cc/h`, deferred key injection via `gAgentPendingDialogueSelect` global processed in `agentBridgeTick()` after 15 ticks.
+
+2. **Muse Text During Dialogue**: Confirmed that `float_thought` already works during non-talking-head dialogue — the text appears above the player sprite on the game map, visible above the dialogue windows. Added `is_talking_head` field to dialogue state so the agent knows when floating text will be visible. Added `agentDialogIsTalkingHead()` accessor.
+
+### Files Modified
+- `engine/fallout2-ce/src/game_dialog.cc` — Added `agentDialogHighlightOption()`, `agentDialogIsTalkingHead()`
+- `engine/fallout2-ce/src/game_dialog.h` — Declared new accessors
+- `src/agent_bridge_internal.h` — Added `gAgentPendingDialogueSelect`, `gAgentDialogueSelectTick`
+- `src/agent_bridge.cc` — Deferred dialogue select processing in `agentBridgeTick()`
+- `src/agent_commands.cc` — `handleSelectDialogue()` now highlights + defers
+- `src/agent_state.cc` — Added `is_talking_head` to dialogue state
+
+---
+
+## 2026-02-13: Ralph Loop — Temple Speedrun & Arroyo Village Arrival
+
+### Temple of Trials Completed (Vex — Charisma/Agility build)
+
+Character Vex (S4/P5/E4/C8/I7/A8/L4 + Gifted, tagged Speech/Lockpick/Steal) cleared the Temple of Trials using a speedrun approach. Key events:
+
+1. **Loaded from slot 7** (ARCAVES elev 0, tile 20129, HP 21/30)
+2. **Elev 0 → Locked door**: Sprinted through waypoints, lockpicked door at 11108, transited to elev 1
+3. **Elev 1 → Pot (19515)**: Sprinted to pot, looted Plastic Explosives during combat
+4. **Sprinted to Impenetrable Door (14322)**: Used combat_move to reach 1 tile away
+5. **`detonate_at` command**: New bridge command directly triggers explosion (bypasses timer queue). Destroyed the blocking "Impenetrable Door" object; "Raised Stone Plate" visual remained but path was clear
+6. **Moved through to elev 2**: Exit grid transition worked cleanly during combat
+7. **Opened door at 19928, sprinted to Cameron**: Used combat to sprint through corridors. Killed a blocking ant with `detonate_at` at its tile
+8. **Cameron dialogue**: Ended turn near Cameron, his script triggered dialogue automatically. Chose "Sure, let's party" → "I'm ready" → [Done]
+9. **Cameron fight**: 3 rounds of unarmed combat. Cameron yielded at low HP. Won with 6 HP remaining
+10. **Exit to Arroyo Village**: Opened door 13528, walked to exit grids, skipped vault suit movie. Arrived at ARVILLAG.MAP tile 20517
+
+### Bridge Improvements Made
+
+- **`detonate_at` command**: Directly triggers `actionExplode()` + `_scr_explode_scenery()` at a tile. Bypasses the queue timer system which freezes during combat. Uses `animate=false` for synchronous execution. Works during combat.
+- **`force_end_combat` command**: Calls `_combat_over_from_load()`. Sets flags but doesn't cleanly exit the combat loop from within. Partially useful but unreliable.
+- **Key insight**: `actionExplode` with `animate=true` defers scenery destruction to animation callbacks that may never fire during combat. Using `animate=false` ensures synchronous execution.
+
+### Bugs Discovered
+
+1. **Game ticks frozen during combat**: Queue events (explosive timers) never fire because `gameTimeGetTime()` doesn't advance during combat. This is a fundamental engine design — combat is turn-based, not real-time.
+2. **`force_end_combat` doesn't cleanly exit combat loop**: `_combat_over_from_load()` sets `gCombatState=0` and `_combat_end_due_to_load=1`, but calling it from within the combat turn doesn't immediately break the loop. The combat loop continues processing.
+3. **`dialogue_select` command doesn't advance dialogue**: Had to use `key_press` with "1"/"2"/"3" keys instead.
+4. **`run_to` failed but `move_to` worked**: At tile 13928, `run_to 13728` didn't move but `move_to 13728` did. Possibly a pathfinding or animation issue with running near NPCs.
+5. **`last_debug` vs `last_command_debug`**: State field is `last_command_debug`, not `last_debug`. Caused confusion during debugging.
+
+### Current State
+
+- **Location**: Arroyo Village (ARVILLAG.MAP), tile 20517
+- **HP**: 6/30 (need healing)
+- **Level**: 1
+- **Save**: Slot 9 + quicksave
+- **Next**: Explore Arroyo Village, talk to NPCs, get Vic quest, heal up
+
+---
+
 ## 2026-02-12: Repo Cleanup, Executor Shell, and Legitimate Temple Clear
 
 ### Repo Cleanup

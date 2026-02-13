@@ -15,6 +15,10 @@ void agentBridgeExit();
 void agentBridgeTick();
 void agentBridgeSetContext(int context);
 
+// Check agent_cmd.json for a "skip" command during movie playback.
+// Returns true if skip was requested (and consumes the command file).
+bool agentBridgeCheckMovieSkip();
+
 // Main menu action injection — set by command handler, read by main menu loop
 // 0=none, 1=new_game, 2=load_game, 3=options, 4=exit
 extern int gAgentMainMenuAction;

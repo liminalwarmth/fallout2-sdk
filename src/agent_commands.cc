@@ -48,6 +48,7 @@ namespace fallout {
 
 std::string gAgentLastCommandDebug;
 std::string gAgentLookAtResult;
+std::map<std::string, int> gCommandFailureCounts;
 
 // Safe wrapper for objectGetName — never returns nullptr
 static const char* safeName(Object* obj)
@@ -394,7 +395,7 @@ static void handleMoveTo(const json& cmd, bool run)
     }
 
     // Check path length first
-    unsigned char rotations[800];
+    unsigned char rotations[2000];
     int pathLen = _make_path(gDude, gDude->tile, tile, rotations, 0);
 
     if (pathLen == 0) {
@@ -495,6 +496,102 @@ static void handleUseObject(const json& cmd)
     debugPrint("AgentBridge: use_object on %llu\n", (unsigned long long)objId);
 }
 
+static void handleOpenDoor(const json& cmd)
+{
+    if (!gAgentTestMode) {
+        gAgentLastCommandDebug = "open_door: BLOCKED — test mode disabled (use use_object instead)";
+        return;
+    }
+
+    if (!cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
+        gAgentLastCommandDebug = "open_door: missing object_id";
+        return;
+    }
+
+    uintptr_t objId = cmd["object_id"].get<uintptr_t>();
+    Object* door = findObjectByUniqueId(objId);
+    if (door == nullptr) {
+        gAgentLastCommandDebug = "open_door: object " + std::to_string(objId) + " not found";
+        return;
+    }
+
+    // Verify it's a door
+    if (PID_TYPE(door->pid) != OBJ_TYPE_SCENERY) {
+        gAgentLastCommandDebug = "open_door: not a scenery object";
+        return;
+    }
+    Proto* proto;
+    if (protoGetProto(door->pid, &proto) == -1 || proto->scenery.type != SCENERY_TYPE_DOOR) {
+        gAgentLastCommandDebug = "open_door: not a door";
+        return;
+    }
+
+    // Check distance (must be adjacent)
+    int dist = objectGetDistanceBetween(gDude, door);
+    if (dist > 1) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "open_door: too far (dist=%d, need <=1)", dist);
+        gAgentLastCommandDebug = buf;
+        return;
+    }
+
+    if (objectIsLocked(door)) {
+        gAgentLastCommandDebug = "open_door: door is locked";
+        return;
+    }
+
+    if (objectIsOpen(door)) {
+        gAgentLastCommandDebug = "open_door: already open";
+        return;
+    }
+
+    // Directly set door open state (bypasses animation system for combat compatibility)
+    // Replicate what _set_door_state_open + _check_door_state does
+    door->data.scenery.door.openFlags |= 0x01;
+
+    // Set OBJECT_OPEN_DOOR flags (= SHOOT_THRU | LIGHT_THRU | NO_BLOCK)
+    // so pathfinding treats the tile as passable
+    door->flags |= OBJECT_OPEN_DOOR;
+
+    // Unblock ALL co-located objects that could block pathfinding
+    // _obj_blocking_at checks critters, scenery, AND walls
+    Object* coObj = objectFindFirstAtLocation(door->elevation, door->tile);
+    while (coObj != nullptr) {
+        if (coObj != door) {
+            int coType = FID_TYPE(coObj->fid);
+            if (coType == OBJ_TYPE_SCENERY || coType == OBJ_TYPE_WALL) {
+                coObj->flags |= OBJECT_NO_BLOCK;
+                debugPrint("AgentBridge: open_door unblocked co-object type=%d flags=0x%x at tile=%d\n",
+                    coType, coObj->flags, door->tile);
+            }
+        }
+        coObj = objectFindNextAtLocation();
+    }
+
+    // Set frame to fully open position
+    Art* art = nullptr;
+    CacheEntry* artHandle = nullptr;
+    art = artLock(door->fid, &artHandle);
+    if (art != nullptr) {
+        int frameCount = artGetFrameCount(art);
+        Rect dirty;
+        objectGetRect(door, &dirty);
+        objectSetFrame(door, frameCount - 1, &dirty);
+        tileWindowRefreshRect(&dirty, door->elevation);
+        artUnlock(artHandle);
+    }
+
+    // Rebuild lighting and refresh display
+    _obj_rebuild_all_light();
+    tileWindowRefresh();
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "open_door: opened door id=%llu at tile=%d", (unsigned long long)objId, door->tile);
+    gAgentLastCommandDebug = buf;
+    debugPrint("AgentBridge: %s\n", buf);
+    agentForceObjectRefresh();
+}
+
 static void handlePickUp(const json& cmd)
 {
     if (!cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
@@ -585,10 +682,23 @@ static void handleTalkTo(const json& cmd)
         return;
     }
 
-    actionTalk(gDude, target);
-    char buf[128];
-    snprintf(buf, sizeof(buf), "talk_to: id=%llu name=%s", (unsigned long long)objId, safeName(target));
-    gAgentLastCommandDebug = buf;
+    // Check if the NPC is nearby but blocked by a counter/wall
+    int dist = objectGetDistanceBetween(gDude, target);
+    bool blocked = _combat_is_shot_blocked(gDude, gDude->tile, target->tile, target, nullptr);
+
+    if (dist < 12 && blocked) {
+        // NPC is close but line-of-sight blocked (behind counter/wall).
+        // Directly request dialogue instead of trying to pathfind.
+        scriptsRequestDialog(target);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "talk_to: id=%llu name=%s (direct, dist=%d)", (unsigned long long)objId, safeName(target), dist);
+        gAgentLastCommandDebug = buf;
+    } else {
+        actionTalk(gDude, target);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "talk_to: id=%llu name=%s", (unsigned long long)objId, safeName(target));
+        gAgentLastCommandDebug = buf;
+    }
     debugPrint("AgentBridge: talk_to %llu\n", (unsigned long long)objId);
 }
 
@@ -706,7 +816,24 @@ static void handleEquipItem(const json& cmd)
             hand = HAND_LEFT;
     }
 
-    int rc = _inven_wield(gDude, item, hand);
+    int rc;
+    if (itemGetType(item) == ITEM_TYPE_MISC) {
+        // _inven_wield reads weapon animation codes from proto union data,
+        // which is garbage for misc items, causing artExists() to fail.
+        // Directly set hand flags like the inventory UI's _switch_hand() does.
+        Object* oldItem = (hand == HAND_RIGHT) ? critterGetItem2(gDude) : critterGetItem1(gDude);
+        if (oldItem != nullptr) {
+            oldItem->flags &= ~OBJECT_IN_ANY_HAND;
+        }
+        if (hand == HAND_RIGHT) {
+            item->flags |= OBJECT_IN_RIGHT_HAND;
+        } else {
+            item->flags |= OBJECT_IN_LEFT_HAND;
+        }
+        rc = 0;
+    } else {
+        rc = _inven_wield(gDude, item, hand);
+    }
     interfaceUpdateItems(false, INTERFACE_ITEM_ACTION_DEFAULT, INTERFACE_ITEM_ACTION_DEFAULT);
     gAgentLastCommandDebug = "equip_item: pid=" + std::to_string(itemPid)
         + " hand=" + (hand == HAND_LEFT ? "left" : "right")
@@ -746,7 +873,14 @@ static void handleUseItem(const json& cmd)
 
     int type = itemGetType(item);
     if (type == ITEM_TYPE_DRUG) {
-        _item_d_take_drug(gDude, item);
+        if (_item_d_take_drug(gDude, item)) {
+            // Remove the consumed drug from inventory and destroy it,
+            // matching the engine's inventory screen behavior.
+            itemRemove(gDude, item, 1);
+            _obj_connect(item, gDude->tile, gDude->elevation, nullptr);
+            _obj_destroy(item);
+        }
+        interfaceRenderHitPoints(true);
         gAgentLastCommandDebug = "use_item: drug pid=" + std::to_string(itemPid);
         debugPrint("AgentBridge: use_item (drug) pid %d\n", itemPid);
     } else {
@@ -1200,7 +1334,12 @@ static void handleUseCombatItem(const json& cmd)
 
     int type = itemGetType(item);
     if (type == ITEM_TYPE_DRUG) {
-        _item_d_take_drug(gDude, item);
+        if (_item_d_take_drug(gDude, item)) {
+            itemRemove(gDude, item, 1);
+            _obj_connect(item, gDude->tile, gDude->elevation, nullptr);
+            _obj_destroy(item);
+        }
+        interfaceRenderHitPoints(true);
         if (gDude->data.critter.combat.ap >= 2) {
             gDude->data.critter.combat.ap -= 2;
         }
@@ -1227,7 +1366,7 @@ static void handleFindPath(const json& cmd)
     }
     int to = cmd["to"].get<int>();
 
-    unsigned char rotations[800];
+    unsigned char rotations[2000];
     int pathLen = _make_path(gDude, from, to, rotations, 0);
 
     if (pathLen == 0) {
@@ -1237,17 +1376,20 @@ static void handleFindPath(const json& cmd)
         return;
     }
 
-    // Convert rotations to tile waypoints (sample every few tiles to keep output manageable)
+    // Convert rotations to tile waypoints spaced ~15 tiles apart.
+    // Each waypoint is reachable from the previous in a single move_to/run_to call
+    // (engine per-move pathfinder handles ~20 tiles).
     std::string waypoints = "[";
     int currentTile = from;
-    int step = (pathLen > 40) ? (pathLen / 20) : 1; // Sample ~20 waypoints for long paths
-    if (step < 1) step = 1;
+    int waypointSpacing = 15; // tiles between waypoints
+    int lastWaypointIdx = 0;
 
     for (int i = 0; i < pathLen; i++) {
         currentTile = tileGetTileInDirection(currentTile, rotations[i], 1);
-        if (i % step == 0 || i == pathLen - 1) {
+        if ((i - lastWaypointIdx >= waypointSpacing) || i == pathLen - 1) {
             if (waypoints.length() > 1) waypoints += ",";
             waypoints += std::to_string(currentTile);
+            lastWaypointIdx = i;
         }
     }
     waypoints += "]";
@@ -1482,12 +1624,9 @@ static void handleMapTransition(const json& cmd)
     int elevation = cmd["elevation"].get<int>();
     int tile = cmd["tile"].get<int>();
 
-    // Direct map transitions (map >= 0) require test mode — players can't
-    // teleport between maps.  map=-2 (world map entry) is a normal action.
-    if (map >= 0 && !gAgentTestMode) {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "map_transition: BLOCKED — direct map transition (map=%d) requires test mode", map);
-        gAgentLastCommandDebug = buf;
+    // ALL map transitions require test mode — players navigate via exit grids
+    if (!gAgentTestMode) {
+        gAgentLastCommandDebug = "map_transition: BLOCKED — test mode disabled (use exit grids instead)";
         return;
     }
     int rotation = 0;
@@ -1579,58 +1718,14 @@ static void handleOpenContainer(const json& cmd)
         return;
     }
 
+    // Always use actionPickUp — the engine's proper walk-to-and-interact.
+    // Handles walking, open animation, lock checks, scripts, and loot screen.
+    actionPickUp(gDude, target);
+    agentForceObjectRefresh();
+
     int distance = objectGetDistanceBetween(gDude, target);
-
-    if (distance > 5) {
-        // Too far — walk to it first via actionPickUp (will trigger loot on arrival)
-        actionPickUp(gDude, target);
-        char buf[128];
-        snprintf(buf, sizeof(buf), "open_container: walking to id=%lu (dist=%d)", (unsigned long)objId, distance);
-        gAgentLastCommandDebug = buf;
-        debugPrint("AgentBridge: %s\n", buf);
-        return;
-    }
-
-    // Player is close enough — open the loot screen directly.
-    // inventoryOpenLooting has a frame check: if the container has multiple
-    // frames and frame==0 (closed), it rejects the call. We handle this by
-    // opening the container first via _obj_use_container, which also handles
-    // lock checks and scripts. But that plays an async animation. So instead,
-    // we directly call inventoryOpenLooting and handle the frame issue.
-    //
-    // For single-frame containers (frame check passes) this just works.
-    // For multi-frame containers, we set frame=1 before calling, since the
-    // visual open animation is not critical for the agent.
-    if (FID_TYPE(target->fid) == OBJ_TYPE_ITEM) {
-        Proto* proto;
-        if (protoGetProto(target->pid, &proto) != -1 && proto->item.type == ITEM_TYPE_CONTAINER) {
-            // Check if locked
-            if (objectIsLocked(target)) {
-                gAgentLastCommandDebug = "open_container: locked";
-                debugPrint("AgentBridge: open_container: locked\n");
-                return;
-            }
-
-            // Handle multi-frame containers: set frame to "open" state
-            if (target->frame == 0) {
-                CacheEntry* handle;
-                Art* frm = artLock(target->fid, &handle);
-                if (frm != nullptr) {
-                    int frameCount = artGetFrameCount(frm);
-                    artUnlock(handle);
-                    if (frameCount > 1) {
-                        // Set frame to open state so inventoryOpenLooting passes
-                        objectSetFrame(target, 1, nullptr);
-                    }
-                }
-            }
-        }
-    }
-
-    inventoryOpenLooting(gDude, target);
-
     char buf[128];
-    snprintf(buf, sizeof(buf), "open_container: id=%lu (direct)", (unsigned long)objId);
+    snprintf(buf, sizeof(buf), "open_container: id=%lu dist=%d", (unsigned long)objId, distance);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
 }
@@ -1669,6 +1764,7 @@ static void handleLootTake(const json& cmd)
     snprintf(buf, sizeof(buf), "loot_take: pid=%d qty=%d rc=%d", itemPid, quantity, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    agentForceObjectRefresh();
 }
 
 static void handleLootTakeAll()
@@ -1705,6 +1801,7 @@ static void handleLootTakeAll()
     snprintf(buf, sizeof(buf), "loot_take_all: took %d item stacks", taken);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    agentForceObjectRefresh();
 }
 
 static void handleLootClose()
@@ -2054,13 +2151,16 @@ static void handleSelectDialogue(const json& cmd)
         return;
     }
 
-    // Dialogue options are selected by pressing keys '1'-'9'
-    // In the engine, these are processed as ASCII characters
-    enqueueInputEvent('1' + index);
+    // Visually highlight the selected option, then defer key injection
+    // so viewers can see which option was chosen (~0.5s highlight)
+    agentDialogHighlightOption(index);
+    gAgentPendingDialogueSelect = index;
+    gAgentDialogueSelectTick = gAgentTick;
+
     char buf[64];
-    snprintf(buf, sizeof(buf), "select_dialogue: index=%d key='%c'", index, '1' + index);
+    snprintf(buf, sizeof(buf), "select_dialogue: index=%d highlighted (deferred)", index);
     gAgentLastCommandDebug = buf;
-    debugPrint("AgentBridge: select_dialogue index %d\n", index);
+    debugPrint("AgentBridge: select_dialogue index %d highlighted, deferring key\n", index);
 }
 
 // --- Command processing ---
@@ -2203,6 +2303,8 @@ void processCommands()
             handleMoveTo(cmd, true);
         } else if (type == "use_object") {
             handleUseObject(cmd);
+        } else if (type == "open_door") {
+            handleOpenDoor(cmd);
         } else if (type == "pick_up") {
             handlePickUp(cmd);
         } else if (type == "use_skill") {
@@ -2223,6 +2325,78 @@ void processCommands()
             interfaceCycleItemAction();
             gAgentLastCommandDebug = "cycle_attack_mode";
             debugPrint("AgentBridge: cycle_attack_mode\n");
+        } else if (type == "force_idle") {
+            // Reset stuck animation state — use when animation_busy deadlocks
+            reg_anim_clear(gDude);
+            gAgentLastCommandDebug = "force_idle: animation cleared";
+            debugPrint("AgentBridge: force_idle — animation state reset\n");
+        } else if (type == "force_end_combat") {
+            if (!gAgentTestMode) {
+                gAgentLastCommandDebug = "force_end_combat: BLOCKED — test mode disabled";
+            } else if (!isInCombat()) {
+                gAgentLastCommandDebug = "force_end_combat: not in combat";
+            } else {
+                _combat_over_from_load();
+                gAgentLastCommandDebug = "force_end_combat: combat ended";
+                debugPrint("AgentBridge: force_end_combat — combat forcefully ended\n");
+            }
+        } else if (type == "detonate_at") {
+            if (!gAgentTestMode) {
+                gAgentLastCommandDebug = "detonate_at: BLOCKED — test mode disabled";
+            } else if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
+                gAgentLastCommandDebug = "detonate_at: missing 'tile'";
+            } else {
+                int tile = cmd["tile"].get<int>();
+                int elevation = gDude->elevation;
+
+                // Get damage from explosive PID (default: Plastic Explosives pid=85)
+                int pid = 85; // 0x00000055 = Plastic Explosives
+                if (cmd.contains("pid") && cmd["pid"].is_number_integer()) {
+                    pid = cmd["pid"].get<int>();
+                }
+
+                int minDamage = 40;
+                int maxDamage = 80;
+                explosiveGetDamage(pid, &minDamage, &maxDamage);
+
+                int radius = weaponGetRocketExplosionRadius(nullptr);
+
+                // Trigger the explosion (non-animated for synchronous execution)
+                // animate=false ensures _combat_explode_scenery runs immediately
+                // rather than being deferred as an animation callback
+                int rc = actionExplode(tile, elevation, minDamage, maxDamage, gDude, false);
+
+                // Also call scenery explosion directly as belt-and-suspenders
+                _scr_explode_scenery(gDude, tile, radius, elevation);
+
+                char buf[128];
+                snprintf(buf, sizeof(buf), "detonate_at: tile=%d dmg=%d-%d radius=%d",
+                    tile, minDamage, maxDamage, radius);
+                gAgentLastCommandDebug = buf;
+                debugPrint("AgentBridge: %s\n", buf);
+            }
+        } else if (type == "nudge") {
+            if (!gAgentTestMode) {
+                gAgentLastCommandDebug = "nudge: BLOCKED — test mode disabled";
+            } else if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
+                gAgentLastCommandDebug = "nudge: missing 'tile'";
+            } else {
+                int tile = cmd["tile"].get<int>();
+                int dist = tileDistanceBetween(gDude->tile, tile);
+                if (dist > 1) {
+                    gAgentLastCommandDebug = "nudge: too far (dist=" + std::to_string(dist) + ", max=1)";
+                } else {
+                    reg_anim_clear(gDude);
+                    Rect rect;
+                    int oldTile = gDude->tile;
+                    objectSetLocation(gDude, tile, gDude->elevation, &rect);
+                    tileSetCenter(tile, TILE_SET_CENTER_REFRESH_WINDOW);
+                    if (isInCombat()) {
+                        gDude->data.critter.combat.ap -= 1;
+                    }
+                    gAgentLastCommandDebug = "nudge: " + std::to_string(oldTile) + " -> " + std::to_string(tile);
+                }
+            }
         } else if (type == "center_camera") {
             tileSetCenter(gDude->tile, TILE_SET_CENTER_REFRESH_WINDOW);
             gAgentLastCommandDebug = "center_camera: tile=" + std::to_string(gDude->tile);
@@ -2511,6 +2685,24 @@ void processCommands()
         } else {
             gAgentLastCommandDebug = "unknown_cmd: " + type;
             debugPrint("AgentBridge: unknown command type: %s\n", type.c_str());
+        }
+
+        // Track consecutive command failures per command type
+        const auto& dbg = gAgentLastCommandDebug;
+        bool isFailure = dbg.find("BLOCKED") != std::string::npos
+            || dbg.find("failed") != std::string::npos
+            || dbg.find("not found") != std::string::npos
+            || dbg.find("too far") != std::string::npos
+            || dbg.find("locked") != std::string::npos
+            || dbg.find("busy") != std::string::npos
+            || dbg.find("cannot") != std::string::npos
+            || dbg.find("missing") != std::string::npos
+            || dbg.find("unknown_cmd") != std::string::npos;
+
+        if (isFailure) {
+            gCommandFailureCounts[type]++;
+        } else {
+            gCommandFailureCounts.erase(type);
         }
     }
 }

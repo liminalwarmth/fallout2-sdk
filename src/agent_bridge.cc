@@ -34,6 +34,8 @@ int gAgentMainMenuAction = 0;
 int gAgentPendingLoadSlot = -1;
 bool gAgentTestMode = false;
 int gAgentPendingExplosiveTimer = 0;
+int gAgentPendingDialogueSelect = -1;
+unsigned int gAgentDialogueSelectTick = 0;
 
 std::unordered_map<std::string, int> gKeyNameToScancode;
 std::unordered_map<std::string, int> gStatNameToId;
@@ -234,12 +236,25 @@ void agentBridgeSetContext(int context)
     debugPrint("AgentBridge: context set to %d\n", context);
 }
 
+// Number of ticks to show dialogue highlight before injecting key
+static const unsigned int kDialogueHighlightDelay = 15; // ~0.5s at 30fps
+
 void agentBridgeTick()
 {
     gAgentTick++;
     processCommands();
     processPendingAttacks();
     agentProcessQueuedMovement();
+
+    // Deferred dialogue select: inject key after highlight delay
+    if (gAgentPendingDialogueSelect >= 0
+        && (gAgentTick - gAgentDialogueSelectTick) >= kDialogueHighlightDelay) {
+        int index = gAgentPendingDialogueSelect;
+        gAgentPendingDialogueSelect = -1;
+        enqueueInputEvent('1' + index);
+        debugPrint("AgentBridge: deferred select_dialogue index=%d injected\n", index);
+    }
+
     writeState();
 }
 
@@ -277,6 +292,27 @@ void agentBridgeExit()
     gTraitNameToId.clear();
 
     debugPrint("AgentBridge: shutdown complete\n");
+}
+
+bool agentBridgeCheckMovieSkip()
+{
+    FILE* f = fopen(kCmdPath, "rb");
+    if (f == nullptr)
+        return false;
+
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    // Look for "skip" command type in the file
+    if (strstr(buf, "\"skip\"") != nullptr) {
+        remove(kCmdPath);
+        debugPrint("AgentBridge: movie skip detected from agent_cmd.json\n");
+        return true;
+    }
+
+    return false;
 }
 
 } // namespace fallout

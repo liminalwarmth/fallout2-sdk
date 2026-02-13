@@ -37,6 +37,73 @@ index 5e03941..c2bc37c 100644
  if(APPLE)
      if(IOS)
          install(TARGETS ${EXECUTABLE_NAME} DESTINATION "Payload")
+diff --git a/src/animation.cc b/src/animation.cc
+index 0884eb2..363f81b 100644
+--- a/src/animation.cc
++++ b/src/animation.cc
+@@ -305,7 +305,7 @@ static bool _anim_in_bk = false;
+ static AnimationSad gAnimationSads[ANIMATION_SAD_LIST_CAPACITY];
+ 
+ // 0x542FD4
+-static PathNode gClosedPathNodeList[2000];
++static PathNode gClosedPathNodeList[8000];
+ 
+ // 0x54CC14
+ static AnimationSequence gAnimationSequences[32];
+@@ -314,7 +314,7 @@ static AnimationSequence gAnimationSequences[32];
+ static unsigned char gPathfinderProcessedTiles[5000];
+ 
+ // 0x562B9C
+-static PathNode gOpenPathNodeList[2000];
++static PathNode gOpenPathNodeList[8000];
+ 
+ // 0x56C7DC
+ static int gAnimationDescriptionCurrentIndex;
+@@ -1740,7 +1740,7 @@ int pathfinderFindPath(Object* object, int from, int to, unsigned char* rotation
+     gOpenPathNodeList[0].estimate = _tile_idistance(from, to);
+     gOpenPathNodeList[0].cost = 0;
+ 
+-    for (int index = 1; index < 2000; index += 1) {
++    for (int index = 1; index < 8000; index += 1) {
+         gOpenPathNodeList[index].tile = -1;
+     }
+ 
+@@ -1788,7 +1788,7 @@ int pathfinderFindPath(Object* object, int from, int to, unsigned char* rotation
+ 
+         closedPathNodeListLength += 1;
+ 
+-        if (closedPathNodeListLength == 2000) {
++        if (closedPathNodeListLength == 8000) {
+             return 0;
+         }
+ 
+@@ -1809,7 +1809,7 @@ int pathfinderFindPath(Object* object, int from, int to, unsigned char* rotation
+             }
+ 
+             int v25 = 0;
+-            for (; v25 < 2000; v25++) {
++            for (; v25 < 8000; v25++) {
+                 if (gOpenPathNodeList[v25].tile == -1) {
+                     break;
+                 }
+@@ -1817,7 +1817,7 @@ int pathfinderFindPath(Object* object, int from, int to, unsigned char* rotation
+ 
+             openPathNodeListLength += 1;
+ 
+-            if (openPathNodeListLength == 2000) {
++            if (openPathNodeListLength == 8000) {
+                 return 0;
+             }
+ 
+@@ -1866,7 +1866,7 @@ int pathfinderFindPath(Object* object, int from, int to, unsigned char* rotation
+     if (openPathNodeListLength != 0) {
+         unsigned char* v39 = rotations;
+         int index = 0;
+-        for (; index < 800; index++) {
++        for (; index < 2000; index++) {
+             if (temp.tile == from) {
+                 break;
+             }
 diff --git a/src/character_editor.cc b/src/character_editor.cc
 index 0d989a7..9e5c730 100644
 --- a/src/character_editor.cc
@@ -312,10 +379,10 @@ index 978a385..5758bd9 100644
      sfall_gl_scr_exit();
      sfallArraysExit();
 diff --git a/src/game_dialog.cc b/src/game_dialog.cc
-index ff98814..61bc711 100644
+index ff98814..5b02950 100644
 --- a/src/game_dialog.cc
 +++ b/src/game_dialog.cc
-@@ -668,6 +668,38 @@ bool _gdialogActive()
+@@ -668,6 +668,50 @@ bool _gdialogActive()
      return _dialog_state_fix != 0;
  }
  
@@ -351,14 +418,26 @@ index ff98814..61bc711 100644
 +    return gGameDialogBarterModifier;
 +}
 +
++void agentDialogHighlightOption(int index)
++{
++    if (index < 0 || index >= gGameDialogOptionEntriesLength)
++        return;
++    gameDialogOptionOnMouseEnter(index);
++}
++
++bool agentDialogIsTalkingHead()
++{
++    return gGameDialogHeadFid != -1;
++}
++
  // gdialogEnter
  // 0x444D3C
  void gameDialogEnter(Object* speaker, int a2)
 diff --git a/src/game_dialog.h b/src/game_dialog.h
-index 0dccf6b..94830a9 100644
+index 0dccf6b..c38fda0 100644
 --- a/src/game_dialog.h
 +++ b/src/game_dialog.h
-@@ -39,6 +39,16 @@ void gameDialogSetBarterModifier(int modifier);
+@@ -39,6 +39,20 @@ void gameDialogSetBarterModifier(int modifier);
  int gameDialogBarter(int modifier);
  void _barter_end_to_talk_to();
  
@@ -372,9 +451,65 @@ index 0dccf6b..94830a9 100644
 +Object* agentGetBarterMerchantTable();
 +int agentGetBarterModifier();
 +
++// Agent bridge accessors for dialogue UI
++void agentDialogHighlightOption(int index);
++bool agentDialogIsTalkingHead();
++
  } // namespace fallout
  
  #endif /* GAME_DIALOG_H */
+diff --git a/src/game_movie.cc b/src/game_movie.cc
+index 29a63de..ddb766a 100644
+--- a/src/game_movie.cc
++++ b/src/game_movie.cc
+@@ -3,6 +3,10 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
++#ifdef AGENT_BRIDGE
++#include "agent_bridge.h"
++#endif
++
+ #include "color.h"
+ #include "cycle.h"
+ #include "debug.h"
+@@ -250,6 +254,14 @@ int gameMoviePlay(int movie, int flags)
+             break;
+         }
+ 
++#ifdef AGENT_BRIDGE
++        // Check if the agent has requested a skip via agent_cmd.json
++        // (agentBridgeTick doesn't run during movie playback)
++        if (agentBridgeCheckMovieSkip()) {
++            break;
++        }
++#endif
++
+         Gesture gesture;
+         if (touch_get_gesture(&gesture) && gesture.state == kEnded) {
+             break;
+diff --git a/src/input.cc b/src/input.cc
+index 33acd6e..fec2702 100644
+--- a/src/input.cc
++++ b/src/input.cc
+@@ -156,9 +156,17 @@ int inputGetInput()
+ 
+     _GNW95_process_message();
+ 
++#ifdef AGENT_BRIDGE
++    // When agent bridge is active, don't pause on focus loss.
++    // The agent needs the game loop to keep running in the background.
++    if (!gProgramIsActive) {
++        _GNW95_process_message();
++    }
++#else
+     if (!gProgramIsActive) {
+         _GNW95_lost_focus();
+     }
++#endif
+ 
+     _process_bk();
+ 
 diff --git a/src/inventory.cc b/src/inventory.cc
 index 7afc8cf..3235051 100644
 --- a/src/inventory.cc
@@ -881,19 +1016,22 @@ index bd17f64..5ced60e 100644
  
  #endif /* PIPBOY_H */
 diff --git a/src/proto_instance.cc b/src/proto_instance.cc
-index 02bb39d..f162b21 100644
+index 02bb39d..9d0a032 100644
 --- a/src/proto_instance.cc
 +++ b/src/proto_instance.cc
-@@ -1631,6 +1631,16 @@ static int _check_door_state(Object* door, Object* obj2)
+@@ -1631,6 +1631,19 @@ static int _check_door_state(Object* door, Object* obj2)
              door->flags &= ~OBJECT_OPEN_DOOR;
          }
  
-+        // Agent bridge: re-block co-located scenery (Door Track, etc.)
++        // Agent bridge: re-block co-located scenery/wall objects (Door Track, etc.)
 +        // when door closes
 +        Object* obj = objectFindFirstAtLocation(door->elevation, door->tile);
 +        while (obj != nullptr) {
-+            if (obj != door && FID_TYPE(obj->fid) == OBJ_TYPE_SCENERY) {
-+                obj->flags &= ~OBJECT_NO_BLOCK;
++            if (obj != door) {
++                int coType = FID_TYPE(obj->fid);
++                if (coType == OBJ_TYPE_SCENERY || coType == OBJ_TYPE_WALL) {
++                    obj->flags &= ~OBJECT_NO_BLOCK;
++                }
 +            }
 +            obj = objectFindNextAtLocation();
 +        }
@@ -901,16 +1039,19 @@ index 02bb39d..f162b21 100644
          _obj_rebuild_all_light();
          tileWindowRefresh();
  
-@@ -1669,6 +1679,16 @@ static int _check_door_state(Object* door, Object* obj2)
+@@ -1669,6 +1682,19 @@ static int _check_door_state(Object* door, Object* obj2)
              door->flags |= OBJECT_OPEN_DOOR;
          }
  
-+        // Agent bridge: unblock co-located scenery (Door Track, etc.)
++        // Agent bridge: unblock co-located scenery/wall objects (Door Track, etc.)
 +        // when door opens so pathfinding works through open doors
 +        Object* obj = objectFindFirstAtLocation(door->elevation, door->tile);
 +        while (obj != nullptr) {
-+            if (obj != door && FID_TYPE(obj->fid) == OBJ_TYPE_SCENERY) {
-+                obj->flags |= OBJECT_NO_BLOCK;
++            if (obj != door) {
++                int coType = FID_TYPE(obj->fid);
++                if (coType == OBJ_TYPE_SCENERY || coType == OBJ_TYPE_WALL) {
++                    obj->flags |= OBJECT_NO_BLOCK;
++                }
 +            }
 +            obj = objectFindNextAtLocation();
 +        }
@@ -934,6 +1075,44 @@ index 9056904..03ffc34 100644
          _obj_destroy(explosive);
      }
  
+diff --git a/src/text_object.cc b/src/text_object.cc
+index 5bc000a..dcb2ff1 100644
+--- a/src/text_object.cc
++++ b/src/text_object.cc
+@@ -184,7 +184,7 @@ int textObjectAdd(Object* object, char* string, int font, int color, int outline
+ 
+     short beginnings[WORD_WRAP_MAX_COUNT];
+     short count;
+-    if (wordWrap(string, 200, beginnings, &count) != 0) {
++    if (wordWrap(string, 350, beginnings, &count) != 0) {
+         fontSetCurrent(oldFont);
+         return -1;
+     }
+@@ -295,6 +295,12 @@ void textObjectsRenderInRect(Rect* rect)
+ 
+     for (int index = 0; index < gTextObjectsCount; index++) {
+         TextObject* textObject = gTextObjects[index];
++
++        // Follow the owner if it has moved to a new tile
++        if (textObject->owner != nullptr && (textObject->flags & TEXT_OBJECT_UNBOUNDED) == 0) {
++            textObject->tile = textObject->owner->tile;
++        }
++
+         tileToScreenXY(textObject->tile, &(textObject->x), &(textObject->y), gElevation);
+         textObject->x += textObject->sx;
+         textObject->y += textObject->sy;
+@@ -334,6 +340,11 @@ static void textObjectsTicker()
+     for (int index = 0; index < gTextObjectsCount; index++) {
+         TextObject* textObject = gTextObjects[index];
+ 
++        // Follow the owner if it has moved to a new tile
++        if (textObject->owner != nullptr && (textObject->flags & TEXT_OBJECT_UNBOUNDED) == 0) {
++            textObject->tile = textObject->owner->tile;
++        }
++
+         unsigned int delay = gTextObjectsLineDelay * textObject->linesCount + gTextObjectsBaseDelay;
+         if ((textObject->flags & TEXT_OBJECT_MARKED_FOR_REMOVAL) != 0 || (getTicksBetween(_get_bk_time(), textObject->time) > delay)) {
+             tileToScreenXY(textObject->tile, &(textObject->x), &(textObject->y), gElevation);
 diff --git a/src/worldmap.cc b/src/worldmap.cc
 index 2929cc0..49e8304 100644
 --- a/src/worldmap.cc

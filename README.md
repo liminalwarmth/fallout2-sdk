@@ -142,7 +142,7 @@ The agent bridge hooks into the Fallout 2 CE engine to provide two-way JSON comm
 
 Key integration points: ticker callback (per-tick state/commands), context hooks (`mainmenu.cc`, `character_selector.cc`, `character_editor.cc`, `main.cc`), animation system (`reg_anim_*`), action system (`actionPickUp`, `actionUseSkill`, etc.), and custom accessor functions for static engine state.
 
-See [`CLAUDE.md`](CLAUDE.md) for development instructions, [`docs/claude/`](docs/claude/) for mode-specific guides, and [`docs/fallout2-sdk-technical-spec.md`](docs/fallout2-sdk-technical-spec.md) for the full technical spec.
+See [`CLAUDE.md`](CLAUDE.md) for development and gameplay instructions, and [`docs/fallout2-sdk-technical-spec.md`](docs/fallout2-sdk-technical-spec.md) for the full technical spec.
 
 ## Project Status
 

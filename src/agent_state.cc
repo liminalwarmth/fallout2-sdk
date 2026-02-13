@@ -410,6 +410,7 @@ static void writeCharacterStats(json& state)
     derived["healing_rate"] = critterGetStat(gDude, STAT_HEALING_RATE);
     derived["critical_chance"] = critterGetStat(gDude, STAT_CRITICAL_CHANCE);
     derived["poison_resistance"] = critterGetStat(gDude, STAT_POISON_RESISTANCE);
+    derived["poison_level"] = critterGetPoison(gDude);
     derived["radiation_resistance"] = critterGetStat(gDude, STAT_RADIATION_RESISTANCE);
 
     // Damage resistance (7 types)
@@ -1160,6 +1161,8 @@ static void writeDialogueState(json& state)
         dialogue["speaker_id"] = objectToUniqueId(gGameDialogSpeaker);
     }
 
+    dialogue["is_talking_head"] = agentDialogIsTalkingHead();
+
     const char* replyText = agentGetDialogReplyText();
     dialogue["reply_text"] = safeString(replyText);
 
@@ -1683,6 +1686,15 @@ void writeState()
 
     if (!gAgentLastCommandDebug.empty()) {
         state["last_command_debug"] = safeString(gAgentLastCommandDebug.c_str());
+    }
+
+    // Command failure counters — shows which commands are repeatedly failing
+    if (!gCommandFailureCounts.empty()) {
+        json failures = json::object();
+        for (const auto& [cmdType, count] : gCommandFailureCounts) {
+            failures[cmdType] = count;
+        }
+        state["command_failures"] = failures;
     }
 
     // Look-at result (kept for 300 ticks / ~5 seconds so external polling can read it)

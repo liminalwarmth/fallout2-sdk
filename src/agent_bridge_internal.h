@@ -1,6 +1,7 @@
 #ifndef AGENT_BRIDGE_INTERNAL_H
 #define AGENT_BRIDGE_INTERNAL_H
 
+#include <map>
 #include <string>
 #include <unordered_map>
 
@@ -43,9 +44,17 @@ const char* sceneryTypeToString(int type);
 // --- Explosive timer bypass ---
 extern int gAgentPendingExplosiveTimer;
 
+// --- Deferred dialogue select (for visual highlight before selection) ---
+extern int gAgentPendingDialogueSelect;      // index to select, or -1
+extern unsigned int gAgentDialogueSelectTick; // tick when highlight was shown
+
 // --- Debug tracking ---
 
 extern std::string gAgentLastCommandDebug;
+
+// --- Command failure counters ---
+// Tracks consecutive failures per command type. Reset on success, incremented on failure.
+extern std::map<std::string, int> gCommandFailureCounts;
 
 // --- Look-at result ---
 // Set by look_at command, consumed by next state write
