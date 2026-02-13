@@ -261,7 +261,7 @@ move_and_wait() {
             return 0
         fi
 
-        # Check if we moved at all — on last attempt, return failure when stuck
+        # Check if we moved at all
         if [ "$cur" = "$before" ]; then
             if [ $attempt -lt $max_retries ]; then
                 attempt=$((attempt + 1))
@@ -274,9 +274,16 @@ move_and_wait() {
             fi
         fi
 
-        # We moved but didn't reach target — report position
-        echo "Moved to tile $cur (target was $tile)"
-        return 0
+        # We moved but didn't reach target — retry from new position
+        if [ $attempt -lt $max_retries ]; then
+            attempt=$((attempt + 1))
+            echo "  Partial move to $cur (target $tile), retry $attempt/$max_retries..."
+            sleep 0.3
+            continue
+        else
+            echo "Moved to tile $cur (target was $tile, close enough after $max_retries retries)"
+            return 0
+        fi
     done
     echo "WARN: move_and_wait failed after $max_retries retries (at tile $(field 'player.tile'), target $tile)" >&2
     return 1
@@ -289,7 +296,7 @@ do_combat() {
     # Args: $1 = timeout_secs (default 60), $2 = min_hp_pct to heal (default 40)
     local timeout_secs="${1:-60}" heal_pct="${2:-40}"
     local start_time=$(date +%s) action_count=0 consec_fail=0 round=0
-    local stuck_rounds=0 last_n_alive=999 last_n_hp=999 round_actions=0
+    local stuck_rounds=0 last_n_alive=999 last_total_hp=999999 round_actions=0
 
     _combat_heal_failed=0
     echo "=== COMBAT START (timeout=${timeout_secs}s) ==="
@@ -327,6 +334,7 @@ alive.sort(key=lambda h: h.get('distance', 999))
 n = alive[0] if alive else None
 w = c.get('active_weapon', {})
 wp = w.get('primary', {})
+total_hp = sum(h.get('hp', 0) for h in alive)
 print(json.dumps({
     'ap': c.get('current_ap', 0),
     'free_move': c.get('free_move', 0),
@@ -338,6 +346,7 @@ print(json.dumps({
     'n_tile': n.get('tile', 0) if n else 0,
     'n_name': n.get('name', '?') if n else '?',
     'n_hp': n.get('hp', 0) if n else 0,
+    'total_hp': total_hp,
     'w_range': wp.get('range', 1),
     'w_ap': wp.get('ap_cost', 3),
 }, separators=(',',':')))
@@ -348,7 +357,7 @@ print(json.dumps({
             sleep 0.5
             continue
         fi
-        local ap=0 hp=0 max_hp=0 n_alive=0 n_id=0 n_dist=999 n_tile=0 n_name='?' n_hp=0 free_move=0 w_range=1 w_ap=3
+        local ap=0 hp=0 max_hp=0 n_alive=0 n_id=0 n_dist=999 n_tile=0 n_name='?' n_hp=0 total_hp=0 free_move=0 w_range=1 w_ap=3
         eval $(echo "$info" | python3 -c "
 import json, sys, shlex
 d = json.load(sys.stdin)
@@ -368,16 +377,16 @@ for k,v in d.items():
 
         echo "  Round $round: AP=$ap(+${free_move}fm) HP=$hp/$max_hp vs $n_name($n_hp hp, dist=$n_dist) [$n_alive alive]"
 
-        # Stuck detection: count rounds where no enemies died AND nearest enemy HP didn't drop
+        # Stuck detection: count rounds where no enemies died AND total enemy HP didn't drop
         if [ $round -gt 0 ]; then
-            if [ "$n_alive" -lt "$last_n_alive" ] 2>/dev/null || [ "$n_hp" -lt "$last_n_hp" ] 2>/dev/null; then
+            if [ "$n_alive" -lt "$last_n_alive" ] 2>/dev/null || [ "$total_hp" -lt "$last_total_hp" ] 2>/dev/null; then
                 stuck_rounds=0
             else
                 stuck_rounds=$((stuck_rounds + 1))
             fi
         fi
         last_n_alive=$n_alive
-        last_n_hp=$n_hp
+        last_total_hp=$total_hp
         round_actions=0
 
         # If stuck for 8+ rounds with no progress, flee combat
@@ -580,6 +589,10 @@ equip_and_use() {
     # Usage: equip_and_use <item_pid> [hand] [timer_seconds]
     #   hand: "left" or "right" (default: right)
     #   timer_seconds: only for explosives (10-180, default: 30)
+    if [ -z "$1" ]; then
+        echo "Usage: equip_and_use <item_pid> [hand] [timer_seconds]"
+        return 1
+    fi
     local item_pid="$1" hand="${2:-right}" timer_seconds="${3:-}"
 
     # 1. Equip item to specified hand
@@ -819,7 +832,7 @@ if found:
     for i in found:
         print(f\"  {i.get('name','?')} x{i.get('quantity',1)} pid={i.get('pid')} type={i.get('type','?')}\")
 else:
-    print('No items matching \"$keyword\" in inventory')
+    print(f'No items matching \"{kw}\" in inventory')
 "
 }
 
@@ -1286,17 +1299,17 @@ read_persona() {
         cat "$PERSONA_FILE"
     else
         local section="$1"
-        python3 -c "
-import re, sys
-with open('$PERSONA_FILE') as f:
+        PERSONA_PATH="$PERSONA_FILE" SECTION="$section" python3 -c "
+import re, sys, os
+with open(os.environ['PERSONA_PATH']) as f:
     content = f.read()
-# Find section by ## heading
-pattern = r'(## ' + re.escape('$section') + r'\b.*?)(?=\n## |\Z)'
+section = os.environ['SECTION']
+pattern = r'(## ' + re.escape(section) + r'\b.*?)(?=\n## |\Z)'
 m = re.search(pattern, content, re.DOTALL)
 if m:
     print(m.group(1).strip())
 else:
-    print('Section \"$section\" not found')
+    print(f'Section \"{section}\" not found')
     sys.exit(1)
 "
     fi
@@ -1324,9 +1337,11 @@ evolve_persona() {
     fi
 
     # Insert before the last line of the Evolution Log section (or append if empty)
-    python3 -c "
-import sys
-with open('$PERSONA_FILE', 'r') as f:
+    PERSONA_PATH="$PERSONA_FILE" EVOLUTION_ENTRY="$evolution_entry" python3 -c "
+import sys, os
+persona_path = os.environ['PERSONA_PATH']
+evolution_entry = os.environ['EVOLUTION_ENTRY']
+with open(persona_path, 'r') as f:
     content = f.read()
 marker = '## Evolution Log'
 idx = content.find(marker)
@@ -1344,16 +1359,16 @@ p_idx = content.find(placeholder, idx)
 if p_idx != -1 and p_idx < len(content):
     # Find end of placeholder line
     p_end = content.index('\n', p_idx) + 1
-    content = content[:p_idx] + '''$evolution_entry''' + '\n' + content[p_end:]
+    content = content[:p_idx] + evolution_entry + '\n' + content[p_end:]
 else:
     # Append to end of section
     # Find next ## or end of file
     next_section = content.find('\n## ', idx + len(marker))
     if next_section == -1:
-        content = content.rstrip() + '\n' + '''$evolution_entry''' + '\n'
+        content = content.rstrip() + '\n' + evolution_entry + '\n'
     else:
-        content = content[:next_section] + '''$evolution_entry''' + '\n' + content[next_section:]
-with open('$PERSONA_FILE', 'w') as f:
+        content = content[:next_section] + evolution_entry + '\n' + content[next_section:]
+with open(persona_path, 'w') as f:
     f.write(content)
 "
 

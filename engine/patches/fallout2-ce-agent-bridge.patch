@@ -691,7 +691,7 @@ index bc0bf0a..4e4e67e 100644
              if (keyCode == gMainMenuButtonKeyBindings[buttonIndex] || keyCode == toupper(gMainMenuButtonKeyBindings[buttonIndex])) {
                  // NOTE: Uninline.
 diff --git a/src/pipboy.cc b/src/pipboy.cc
-index 9327894..d305c60 100644
+index 9327894..e169130 100644
 --- a/src/pipboy.cc
 +++ b/src/pipboy.cc
 @@ -2605,4 +2605,156 @@ static void holodiskFree()
@@ -807,7 +807,7 @@ index 9327894..d305c60 100644
 +    if (minutes > 0) {
 +        unsigned int minuteEnd = gameTime + (unsigned int)minutes * 600;
 +        unsigned int nextEvent = queueGetNextEventTime();
-+        while (nextEvent <= minuteEnd) {
++        while (nextEvent > 0 && nextEvent <= minuteEnd) {
 +            gameTimeSetTime(nextEvent + 1);
 +            if (queueProcessEvents()) {
 +                return true; // interrupted
@@ -831,7 +831,7 @@ index 9327894..d305c60 100644
 +            unsigned int targetTime = hourStart + (unsigned int)(elapsed + step) * 600;
 +
 +            unsigned int nextEvent = queueGetNextEventTime();
-+            while (nextEvent <= targetTime) {
++            while (nextEvent > 0 && nextEvent <= targetTime) {
 +                gameTimeSetTime(nextEvent + 1);
 +                if (queueProcessEvents()) {
 +                    return true; // interrupted
