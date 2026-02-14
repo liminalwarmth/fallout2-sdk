@@ -144,14 +144,16 @@
 # ITEMS ON WORLD: use_item_on <pid> <id> (rope on well, key on door, etc.)
 # HEALING:        heal_to_full → rest (no hostiles) → use_skill first_aid
 # COMBAT:         do_combat [timeout] — fully autonomous targeting + movement
+# OPENING SHOT:   engage_ranged_opening <target_id|nearest> [opening_range] [auto|on|off]
+#                 approach to ranged standoff, then enter combat and fire first shot
 # LOOTING:        loot <id> (single container) or explore_area (sweep all nearby)
 # NPC:            talk <id> → dialogue_assess → select_option <n> → dialogue_muse
 #                 Or batch: talk <id> <opt1> <opt2> ... for quick dialogue
 # NAVIGATION:     move_and_wait <tile>, move_and_wait exit "<dest>"
 # SAVE:           save_before "label" — always before lockpick, combat, explosives
-# LEVEL-UP:       character_screen → skill_add per point → perk_add if available
+# LEVEL-UP:       level_up → add_skills skill=N → choose_perk "name" → finish_editor
 # CHAR CREATE:    main_menu new_game → skip movies → char_selector_select →
-#                 set SPECIAL/traits/skills/name → editor_done
+#                 set_special S P E C I A L → set_traits → tag_skills → finish_editor
 # WORLD MAP:      worldmap_travel → poll is_walking → worldmap_enter_location
 #
 # ═══════════════════════════════════════════════════════════════════════════
@@ -445,6 +447,12 @@ if n_ground: parts.append(f'{n_ground} ground')
 obj_str = ', '.join(parts) if parts else 'empty'
 poison = ch.get('poison_level', 0)
 extra = f' POISON:{poison}' if poison else ''
+char = d.get('character', {})
+if char.get('can_level_up'):
+    extra += ' LEVEL UP!'
+usp = char.get('unspent_skill_points', 0)
+if usp and ctx != 'character_editor':
+    extra += f' SP:{usp}'
 print(f\"HP:{hp}/{max_hp} Lv:{lvl} Tile:{tile} {m.get('name','?')} {ctx} [{obj_str}]{extra}\")
 "
 }
@@ -847,6 +855,8 @@ executor_help() {
     echo "  equip_and_use <pid> [hand] [t]  — equip + switch hand + use"
     echo "  check_ammo                      — active weapon ammo + compatible ammo"
     echo "  reload [ammo_pid]               — reload (optionally with specific ammo)"
+    echo "  engage_ranged_opening <target_id|nearest> [opening_range] [auto|on|off]"
+    echo "                               — pre-combat ranged opener (approach, trigger combat, opening shot)"
     echo "  rest [hours]                    — native rest/time pass (interrupt-aware)"
     echo "  sneak_on / sneak_off            — idempotent sneak toggle"
     echo "  move_and_wait <tile>            — move to tile (polls for arrival/transition)"
@@ -874,6 +884,16 @@ executor_help() {
     echo "  barter_remove_request <p> [qty] — remove from merchant request"
     echo "  barter_confirm                  — native confirm (engine transaction)"
     echo "  barter_talk / barter_cancel     — return to dialogue / cancel barter"
+    echo ""
+    echo "CHARACTER (creation & level-up):"
+    echo "  editor_status                   — editor state summary (SPECIAL, traits, skills, perks)"
+    echo "  set_special S P E C I A L       — set all SPECIAL stats (creation only)"
+    echo "  set_traits trait1 [trait2]      — select traits (creation only)"
+    echo "  tag_skills s1 s2 s3            — tag skills (creation only)"
+    echo "  add_skills skill=N [...]       — distribute skill points (level-up)"
+    echo "  choose_perk <name|id>          — select a perk by name or ID"
+    echo "  level_up                       — open character screen for leveling"
+    echo "  finish_editor                  — close editor (validates first)"
     echo ""
     echo "COMBAT AI:"
     echo "  configure_combat_ai k v [...]   — tune engine auto-combat packet options"
@@ -916,5 +936,6 @@ fi
 source "$SCRIPT_DIR/executor_world.sh"
 source "$SCRIPT_DIR/executor_combat.sh"
 source "$SCRIPT_DIR/executor_dialogue.sh"
+source "$SCRIPT_DIR/executor_chargen.sh"
 
 echo "executor.sh loaded — run 'executor_help' for commands"

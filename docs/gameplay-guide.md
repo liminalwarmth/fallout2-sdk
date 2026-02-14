@@ -7,6 +7,41 @@ Use this as a practical reference for what you can actually do in the world:
 
 ---
 
+## Character Creation
+
+### SPECIAL Stats (40 base budget: 7x5 + 5 free)
+
+- **STR**: melee damage, carry weight. Need 4+ to wield Spear (first real weapon). 5+ for most melee weapons.
+- **PER**: sequence (combat initiative), ranged accuracy modifier, perception checks.
+- **END**: HP per level, poison/rad resistance, healing rate. Important for survival.
+- **CHR**: party size limit (CHR/2), NPC reactions, some dialogue. Often dumped to 1-3 for combat builds.
+- **INT**: skill points per level (5 + 2xINT). The most impactful stat for long-term builds. INT 1-3 limits dialogue options (tribal/stupid mode). INT 7-8 is the sweet spot.
+- **AGI**: AP (5 + AGI/2 rounded down). Critical for combat -- more AP = more attacks per turn. AGI 8+ strongly recommended.
+- **LUK**: critical chance (LUK%), some random events. LUK 6+ gives meaningful crit rate.
+
+### Traits (pick 0-2)
+
+- **Gifted**: +1 all SPECIAL, -10% all skills, -5 skill pts/level. Very strong despite the penalty -- SPECIAL points are scarce, skill points are plentiful.
+- **Fast Shot**: -1 AP per ranged attack, can't do aimed shots. Excellent for burst/spray ranged builds.
+- **Heavy Handed**: +4 melee damage, -30% critical hit effects. Good for melee/unarmed builds.
+- **Finesse**: +10% critical chance, +30% DR of all hits. Good with high Luck builds.
+- **Small Frame**: +1 AGI, carry weight reduced. The AGI bonus is valuable, reduced carry is manageable.
+- **Skilled**: +5 skill pts/level, perks every 4 levels instead of 3. Good for skill-hungry builds.
+- **Avoid**: Jinxed (affects everyone including allies), Chem Reliant, Bloody Mess (cosmetic only).
+
+### Tagged Skills (pick 3, get +20 base bonus + doubled skill point investment)
+
+- At least 1 combat skill. Small Guns is the most versatile (pistols, rifles, SMGs).
+- **Lockpick**: opens 90% of locked doors/containers. Extremely valuable throughout the game.
+- **Speech**: critical for dialogue checks, peaceful resolutions, better quest rewards.
+- **Doctor**: heals crippled limbs, supplements healing. Useful early.
+
+### Temple of Trials Constraints
+
+STR >= 4 for Spear, unarmed/melee useful for first few fights, Lockpick for the locked door, Plastic Explosives for the sealed door.
+
+---
+
 ## Core Interaction Model
 
 - **Right-click** changes cursor/action mode (move/use/look behavior).
@@ -149,6 +184,19 @@ Rule of thumb:
 - Combat is turn-based and AP-driven.
 - Common AP costs (varies by weapon): move, attack, reload, use item.
 - Reloading in a bad position gets people killed; manage ammo before pushing.
+
+### Better fight openings (especially with guns)
+
+- If you have a non-throw ranged weapon, avoid running directly into enemies before combat starts.
+- Approach to standoff distance, then manually start combat and fire first.
+- This is strongest versus melee enemies because they spend AP closing distance.
+- If Sneak is decent, toggle Sneak during the approach for safer setup.
+- Avoid using throw mode by default for spears/knives unless the tactical tradeoff is worth losing the item.
+
+Executor tactic:
+- `engage_ranged_opening <target_id|nearest> [opening_range] [auto|on|off]`
+- Get `target_id` from `look_around`/`status` first when you want deterministic targeting.
+- Then `do_combat` for autonomous follow-through.
 
 Aimed shots:
 - Higher AP and lower base hit chance.
