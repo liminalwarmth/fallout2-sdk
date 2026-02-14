@@ -173,7 +173,7 @@
 
 set -uo pipefail
 
-GAME_DIR="${FALLOUT2_GAME_DIR:-/Users/alexis.radcliff/fallout2-sdk/game}"
+GAME_DIR="${FALLOUT2_GAME_DIR:-$(cd "$(dirname "$0")/.." && pwd)/game}"
 STATE="$GAME_DIR/agent_state.json"
 CMD="$GAME_DIR/agent_cmd.json"
 TMP="$GAME_DIR/agent_cmd.tmp"
