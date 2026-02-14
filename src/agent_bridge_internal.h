@@ -1,6 +1,7 @@
 #ifndef AGENT_BRIDGE_INTERNAL_H
 #define AGENT_BRIDGE_INTERNAL_H
 
+#include <cstdio>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -80,6 +81,17 @@ Object* findObjectByUniqueId(uintptr_t uid);
 
 // Force object re-enumeration on next state write (call after elevation changes)
 void agentForceObjectRefresh();
+
+// --- Debug logging ---
+
+extern FILE* gAgentDebugLog;
+extern std::string gAgentSessionId;
+
+void agentDebugLogInit();
+void agentDebugLogExit();
+void agentDebugLogCommand(const std::string& type, const json& cmd,
+    const std::string& result, bool isFailure);
+void agentDebugLogStateChange(const char* event, const json& details);
 
 // --- Command processing ---
 

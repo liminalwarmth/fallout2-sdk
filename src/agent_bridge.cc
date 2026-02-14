@@ -2,14 +2,18 @@
 #include "agent_bridge_internal.h"
 
 #include <SDL.h>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 #include <unordered_map>
 
 #include "combat.h"
+#include "critter.h"
 #include "debug.h"
 #include "game.h"
+#include "map.h"
 #include "object.h"
 #include "game_dialog.h"
 #include "game_movie.h"
@@ -164,6 +168,136 @@ const char* traitIdToName(int trait)
     return "unknown";
 }
 
+// --- Debug logging ---
+
+FILE* gAgentDebugLog = nullptr;
+std::string gAgentSessionId;
+static int gDebugLogLineCount = 0;
+static const int kDebugLogMaxLines = 50000;
+
+static int64_t debugLogTimestampMs()
+{
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+    return ms.count();
+}
+
+void agentDebugLogInit()
+{
+    // Create debug directory
+    mkdir("debug", 0755);
+
+    // Rotate: current -> prev, delete old prev
+    const char* files[] = { "bridge.ndjson", "executor.ndjson", "hook.ndjson" };
+    for (const auto& name : files) {
+        std::string cur = std::string("debug/") + name;
+        std::string prev = std::string("debug/prev_") + name;
+        remove(prev.c_str());
+        rename(cur.c_str(), prev.c_str());
+    }
+
+    // Generate session ID: YYYYMMDD-HHMMSS
+    time_t now = time(nullptr);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char sessionBuf[32];
+    snprintf(sessionBuf, sizeof(sessionBuf), "%04d%02d%02d-%02d%02d%02d",
+        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+        tm.tm_hour, tm.tm_min, tm.tm_sec);
+    gAgentSessionId = sessionBuf;
+
+    // Open bridge log
+    gAgentDebugLog = fopen("debug/bridge.ndjson", "a");
+    gDebugLogLineCount = 0;
+
+    // Write session.json
+    FILE* sf = fopen("debug/session.json", "w");
+    if (sf != nullptr) {
+        json session;
+        session["session_id"] = gAgentSessionId;
+        session["pid"] = getpid();
+        session["start_tick"] = gAgentTick;
+        session["start_ts"] = debugLogTimestampMs();
+        std::string content = session.dump(2);
+        fwrite(content.data(), 1, content.size(), sf);
+        fclose(sf);
+    }
+
+    debugPrint("AgentBridge: debug log initialized (session=%s)\n", sessionBuf);
+}
+
+void agentDebugLogExit()
+{
+    if (gAgentDebugLog != nullptr) {
+        fclose(gAgentDebugLog);
+        gAgentDebugLog = nullptr;
+    }
+    gAgentSessionId.clear();
+    gDebugLogLineCount = 0;
+}
+
+static void debugLogWriteLine(const std::string& line)
+{
+    if (gAgentDebugLog == nullptr || gDebugLogLineCount >= kDebugLogMaxLines)
+        return;
+    fprintf(gAgentDebugLog, "%s\n", line.c_str());
+    fflush(gAgentDebugLog);
+    gDebugLogLineCount++;
+    if (gDebugLogLineCount >= kDebugLogMaxLines) {
+        debugPrint("AgentBridge: debug log line limit reached (%d), stopping\n", kDebugLogMaxLines);
+        fclose(gAgentDebugLog);
+        gAgentDebugLog = nullptr;
+    }
+}
+
+void agentDebugLogCommand(const std::string& type, const json& cmd,
+    const std::string& result, bool isFailure)
+{
+    if (gAgentDebugLog == nullptr)
+        return;
+
+    json entry;
+    entry["ts"] = debugLogTimestampMs();
+    entry["tick"] = gAgentTick;
+    entry["event"] = "cmd";
+    entry["type"] = type;
+    entry["context"] = detectContext();
+    entry["result"] = result;
+    if (isFailure)
+        entry["failure"] = true;
+
+    // Include selective args for debugging context
+    if (cmd.contains("tile"))
+        entry["tile"] = cmd["tile"];
+    if (cmd.contains("object_id"))
+        entry["object_id"] = cmd["object_id"];
+    if (cmd.contains("target_id"))
+        entry["target_id"] = cmd["target_id"];
+    if (cmd.contains("skill"))
+        entry["skill"] = cmd["skill"];
+    if (cmd.contains("slot"))
+        entry["slot"] = cmd["slot"];
+    if (cmd.contains("item_pid"))
+        entry["item_pid"] = cmd["item_pid"];
+
+    debugLogWriteLine(entry.dump(-1));
+}
+
+void agentDebugLogStateChange(const char* event, const json& details)
+{
+    if (gAgentDebugLog == nullptr)
+        return;
+
+    json entry;
+    entry["ts"] = debugLogTimestampMs();
+    entry["tick"] = gAgentTick;
+    entry["event"] = "state";
+    entry["change"] = event;
+    entry.merge_patch(details);
+
+    debugLogWriteLine(entry.dump(-1));
+}
+
 // --- Object lookup by unique pointer-based ID ---
 
 Object* findObjectByUniqueId(uintptr_t uid)
@@ -248,6 +382,53 @@ static const unsigned int kDialogueHighlightDelay = 15; // ~0.5s at 30fps
 // Track context transitions to auto-hide dialogue overlay
 static const char* gPrevContext = nullptr;
 
+// State change tracking for debug logging
+static const char* gDebugPrevContext = nullptr;
+static int gDebugPrevHP = -1;
+static bool gDebugPrevInCombat = false;
+static std::string gDebugPrevMapName;
+
+static void detectStateChanges()
+{
+    if (gAgentDebugLog == nullptr)
+        return;
+
+    const char* ctx = detectContext();
+
+    // Context change
+    if (gDebugPrevContext != nullptr && ctx != nullptr
+        && strcmp(gDebugPrevContext, ctx) != 0) {
+        agentDebugLogStateChange("context_change",
+            { { "from", gDebugPrevContext }, { "to", ctx } });
+    }
+    gDebugPrevContext = ctx;
+
+    // HP change
+    if (gDude != nullptr) {
+        int hp = critterGetHitPoints(gDude);
+        if (gDebugPrevHP >= 0 && hp != gDebugPrevHP) {
+            agentDebugLogStateChange("hp_change",
+                { { "from", gDebugPrevHP }, { "to", hp }, { "delta", hp - gDebugPrevHP } });
+        }
+        gDebugPrevHP = hp;
+    }
+
+    // Combat start/end
+    bool inCombat = isInCombat();
+    if (inCombat != gDebugPrevInCombat) {
+        agentDebugLogStateChange(inCombat ? "combat_start" : "combat_end", json::object());
+    }
+    gDebugPrevInCombat = inCombat;
+
+    // Map change
+    std::string curMap(gMapHeader.name);
+    if (!gDebugPrevMapName.empty() && curMap != gDebugPrevMapName) {
+        agentDebugLogStateChange("map_change",
+            { { "from", gDebugPrevMapName }, { "to", curMap } });
+    }
+    gDebugPrevMapName = curMap;
+}
+
 void agentBridgeTick()
 {
     gAgentTick++;
@@ -287,6 +468,7 @@ void agentBridgeTick()
         }
     }
 
+    detectStateChanges();
     writeState();
 }
 
@@ -305,12 +487,15 @@ void agentBridgeInit()
     remove(kStateTmpPath);
 
     tickersAdd(agentBridgeTick);
+
+    agentDebugLogInit();
     debugPrint("AgentBridge: initialized, ticker registered\n");
 }
 
 void agentBridgeExit()
 {
     debugPrint("AgentBridge: shutting down\n");
+    agentDebugLogExit();
     tickersRemove(agentBridgeTick);
 
     agentDestroyDialogueOverlay();

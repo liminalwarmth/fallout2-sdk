@@ -178,6 +178,28 @@ STATE="$GAME_DIR/agent_state.json"
 CMD="$GAME_DIR/agent_cmd.json"
 TMP="$GAME_DIR/agent_cmd.tmp"
 
+# ─── Debug Logging ────────────────────────────────────────────────────
+
+DEBUG_DIR="$GAME_DIR/debug"
+DEBUG_LOG="$DEBUG_DIR/executor.ndjson"
+
+_dbg() {
+    [ -d "$DEBUG_DIR" ] && echo "$1" >> "$DEBUG_LOG" 2>/dev/null
+}
+
+_dbg_ts() {
+    zmodload -s zsh/datetime 2>/dev/null
+    printf '%d' $(( ${EPOCHREALTIME:-$(date +%s)} * 1000 ))
+}
+
+_dbg_start() {
+    _dbg "{\"ts\":$(_dbg_ts),\"tick\":$(tick 2>/dev/null),\"event\":\"action_start\",\"fn\":\"$1\",\"args\":\"${2:-}\"}"
+}
+
+_dbg_end() {
+    _dbg "{\"ts\":$(_dbg_ts),\"tick\":$(tick 2>/dev/null),\"event\":\"action_end\",\"fn\":\"$1\",\"result\":\"$2\",\"duration_ms\":$(( $(_dbg_ts) - ${3:-0} ))}"
+}
+
 # ─── Core I/O ─────────────────────────────────────────────────────────
 
 send() {
@@ -186,6 +208,9 @@ send() {
 
 cmd() {
     send "{\"commands\":[$1]}"
+    local _type="?"
+    [[ "$1" =~ '"type":"([^"]+)"' ]] && _type="${match[1]}"
+    _dbg "{\"ts\":$(_dbg_ts),\"tick\":$(tick 2>/dev/null),\"event\":\"cmd\",\"caller\":\"${funcstack[2]:-direct}\",\"type\":\"$_type\"}"
 }
 
 py() {
@@ -216,49 +241,69 @@ tick() { field "tick"; }
 
 wait_idle() {
     # Wait for animation_busy=false, max ~15s
+    local _w_start=$(_dbg_ts)
     local max="${1:-30}"
     for i in $(seq 1 $max); do
         local busy=$(field "player.animation_busy")
-        [ "$busy" = "false" ] || [ "$busy" = "False" ] && return 0
+        if [ "$busy" = "false" ] || [ "$busy" = "False" ]; then
+            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"idle\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"ok\"}"
+            return 0
+        fi
         sleep 0.5
     done
+    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"idle\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"timeout\"}"
     echo "WARN: wait_idle timeout" >&2
     return 1
 }
 
 wait_context() {
     local target="$1" max="${2:-60}"
+    local _w_start=$(_dbg_ts)
     for i in $(seq 1 $max); do
         local ctx=$(context)
-        [ "$ctx" = "$target" ] && return 0
+        if [ "$ctx" = "$target" ]; then
+            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"context\",\"target\":\"$target\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"ok\"}"
+            return 0
+        fi
         sleep 0.5
     done
+    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"context\",\"target\":\"$target\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"timeout\"}"
     echo "WARN: wait_context timeout for '$target' (got '$(context)')" >&2
     return 1
 }
 
 wait_context_prefix() {
     local prefix="$1" max="${2:-60}"
+    local _w_start=$(_dbg_ts)
     for i in $(seq 1 $max); do
         local ctx=$(context)
-        [[ "$ctx" == ${prefix}* ]] && return 0
+        if [[ "$ctx" == ${prefix}* ]]; then
+            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"context_prefix\",\"target\":\"$prefix\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"ok\"}"
+            return 0
+        fi
         # Auto-skip movies
         [ "$ctx" = "movie" ] && cmd '{"type":"skip"}' && sleep 1 && continue
         sleep 0.5
     done
+    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"context_prefix\",\"target\":\"$prefix\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"timeout\"}"
     echo "WARN: wait_context_prefix timeout for '$prefix' (got '$(context)')" >&2
     return 1
 }
 
 wait_tick_advance() {
     # Wait for tick to advance past current value (confirms command was processed)
+    local _w_start=$(_dbg_ts)
     local cur_tick=$(tick)
     local max="${1:-30}"
     for i in $(seq 1 $max); do
         local t=$(tick)
-        [ "$t" != "$cur_tick" ] && return 0
+        if [ "$t" != "$cur_tick" ]; then
+            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"tick_advance\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"ok\"}"
+            return 0
+        fi
         sleep 0.3
     done
+    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"tick_advance\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"timeout\"}"
     return 1
 }
 
@@ -561,6 +606,131 @@ objective() {
     esac
 }
 
+# ─── Debug Queries ────────────────────────────────────────────────────
+
+debug_tail() {
+    # Tail last N entries from a debug log stream.
+    # Usage: debug_tail [stream] [n]
+    #   stream: bridge, executor, hook, all (default: all)
+    #   n: number of entries (default: 20)
+    local stream="${1:-all}" n="${2:-20}"
+    local files=()
+    case "$stream" in
+        bridge)   files=("$DEBUG_DIR/bridge.ndjson") ;;
+        executor) files=("$DEBUG_DIR/executor.ndjson") ;;
+        hook)     files=("$DEBUG_DIR/hook.ndjson") ;;
+        all)      files=("$DEBUG_DIR/bridge.ndjson" "$DEBUG_DIR/executor.ndjson" "$DEBUG_DIR/hook.ndjson") ;;
+        *) echo "Usage: debug_tail [bridge|executor|hook|all] [n]"; return 1 ;;
+    esac
+    python3 -c "
+import json, sys, os
+
+files = sys.argv[1].split(',')
+n = int(sys.argv[2])
+lines = []
+for f in files:
+    if not os.path.isfile(f): continue
+    src = os.path.basename(f).replace('.ndjson','')
+    with open(f) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line: continue
+            try:
+                entry = json.loads(line)
+                entry['_src'] = src
+                lines.append(entry)
+            except: pass
+
+lines.sort(key=lambda e: e.get('ts', 0))
+for entry in lines[-n:]:
+    tick = entry.get('tick', '?')
+    src = entry.get('_src', '?')
+    event = entry.get('event', '?')
+    parts = [f'[{tick}]', f'{src}/{event}']
+    for k in ('type', 'change', 'fn', 'caller', 'target', 'result', 'failure', 'reason', 'duration_ms', 'from', 'to', 'delta', 'hook_event', 'context', 'blocks_sent'):
+        if k in entry and k != 'event':
+            parts.append(f'{k}={entry[k]}')
+    print(' '.join(str(p) for p in parts))
+" "$(IFS=,; echo "${files[*]}")" "$n"
+}
+
+debug_find() {
+    # Grep across all debug NDJSON files for a pattern.
+    # Usage: debug_find <pattern>
+    local pattern="${1:?Usage: debug_find <pattern>}"
+    python3 -c "
+import json, sys, os, re
+
+pattern = sys.argv[1]
+debug_dir = sys.argv[2]
+files = [os.path.join(debug_dir, f) for f in os.listdir(debug_dir) if f.endswith('.ndjson')]
+files.sort()
+for fpath in files:
+    fname = os.path.basename(fpath)
+    with open(fpath) as fh:
+        for i, line in enumerate(fh, 1):
+            if re.search(pattern, line, re.IGNORECASE):
+                line = line.strip()
+                try:
+                    entry = json.loads(line)
+                    tick = entry.get('tick', '?')
+                    event = entry.get('event', '?')
+                    etype = entry.get('type', entry.get('change', entry.get('fn', '')))
+                    result = entry.get('result', '')
+                    print(f'{fname}:{i} [{tick}] {event} {etype} {result}')
+                except:
+                    print(f'{fname}:{i} {line[:120]}')
+" "$pattern" "$DEBUG_DIR"
+}
+
+debug_timeline() {
+    # Interleave all debug logs by timestamp, show last N events.
+    # Usage: debug_timeline [n]
+    local n="${1:-30}"
+    debug_tail all "$n"
+}
+
+debug_last_failure() {
+    # Find the most recent failure event across all debug logs.
+    python3 -c "
+import json, sys, os
+
+debug_dir = sys.argv[1]
+files = [os.path.join(debug_dir, f) for f in os.listdir(debug_dir) if f.endswith('.ndjson') and not f.startswith('prev_')]
+failures = []
+for fpath in files:
+    src = os.path.basename(fpath).replace('.ndjson','')
+    with open(fpath) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line: continue
+            try:
+                entry = json.loads(line)
+                is_fail = (
+                    entry.get('failure') == True
+                    or entry.get('result') in ('timeout', 'fail', 'stuck', 'no_path', 'blocked', 'no_exits', 'no_items', 'no_loot_ctx', 'no_dialogue', 'bad_args')
+                    or any(w in str(entry.get('result', '')) for w in ('BLOCKED', 'failed', 'not found'))
+                )
+                if is_fail:
+                    entry['_src'] = src
+                    failures.append(entry)
+            except: pass
+
+if not failures:
+    print('No failures found in current session logs.')
+else:
+    failures.sort(key=lambda e: e.get('ts', 0))
+    entry = failures[-1]
+    tick = entry.get('tick', '?')
+    src = entry.get('_src', '?')
+    event = entry.get('event', '?')
+    print(f'Last failure: [{tick}] {src}/{event}')
+    for k, v in entry.items():
+        if k not in ('_src', 'ts'):
+            print(f'  {k}: {v}')
+" "$DEBUG_DIR"
+}
+
 # ─── Help ─────────────────────────────────────────────────────────────
 
 executor_help() {
@@ -615,6 +785,12 @@ executor_help() {
     echo ""
     echo "UI:"
     echo "  dismiss_options_menu            — dismiss leaked options dialog"
+    echo ""
+    echo "DEBUG:"
+    echo "  debug_tail [stream] [n]         — tail last N log entries (bridge/executor/hook/all)"
+    echo "  debug_find <pattern>            — grep all debug logs for pattern"
+    echo "  debug_timeline [n]              — interleaved timeline of last N events"
+    echo "  debug_last_failure              — most recent failure across all logs"
 }
 
 # ─── Source sub-modules ──────────────────────────────────────────────

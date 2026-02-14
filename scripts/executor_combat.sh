@@ -6,9 +6,7 @@
 # ─── Combat ───────────────────────────────────────────────────────────
 
 wait_my_turn() {
-    # After ending turn in combat, wait until it's our turn again.
-    # Watches for context to become gameplay_combat (not _wait).
-    # Also handles combat ending (context changes to exploration).
+    local _ds=$(_dbg_ts)
     local max_wait="${1:-30}" elapsed=0
     # First, give the engine time to register end_turn and start enemy turns
     sleep 1.5
@@ -19,22 +17,25 @@ wait_my_turn() {
             # Verify it's actually our turn by checking AP > 0
             local ap=$(py "print(d.get('combat',{}).get('current_ap',0))")
             if [ "${ap:-0}" -gt 0 ]; then
+                _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"my_turn\",\"duration_ms\":$(( $(_dbg_ts) - _ds )),\"result\":\"ok\"}"
                 return 0
             fi
         fi
         if [ "$ctx" = "gameplay_exploration" ] || [ "$ctx" = "gameplay_dialogue" ]; then
             # Combat ended
+            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"my_turn\",\"duration_ms\":$(( $(_dbg_ts) - _ds )),\"result\":\"combat_ended\"}"
             return 0
         fi
         sleep 0.8
         elapsed=$((elapsed + 1))
     done
+    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"my_turn\",\"duration_ms\":$(( $(_dbg_ts) - _ds )),\"result\":\"timeout\"}"
     return 1
 }
 
 do_combat() {
-    # Run a full combat loop with wall-clock timeout and failure detection.
-    # Args: $1 = timeout_secs (default 60), $2 = min_hp_pct to heal (default 40)
+    local _ds=$(_dbg_ts)
+    _dbg_start "do_combat" "${1:-60} ${2:-40}"
     local timeout_secs="${1:-60}" heal_pct="${2:-40}"
     local start_time=$(date +%s) action_count=0 consec_fail=0 round=0
     local stuck_rounds=0 last_n_alive=999 last_total_hp=999999
@@ -51,6 +52,7 @@ do_combat() {
         local elapsed=$((now - start_time))
         if [ $elapsed -ge $timeout_secs ]; then
             echo "=== COMBAT TIMEOUT (${elapsed}s, actions=$action_count, rounds=$round) ==="
+            _dbg_end "do_combat" "timeout" "$_ds"
             return 1
         fi
 
@@ -61,6 +63,7 @@ do_combat() {
             echo "=== COMBAT END (context: $ctx, rounds: $round, actions: $action_count, ${elapsed}s) ==="
             # Win quip runs synchronously (not background) so it completes before we return
             combat_quip_sync win "$_combat_kills kills in $round rounds"
+            _dbg_end "do_combat" "ok" "$_ds"
             return 0
         fi
 
@@ -287,6 +290,7 @@ for k,v in d.items():
             local flee_ctx=$(context)
             if [ "$flee_ctx" != "gameplay_combat" ] && [ "$flee_ctx" != "gameplay_combat_wait" ]; then
                 echo "=== COMBAT FLED (stuck, ${round} rounds) ==="
+                _dbg_end "do_combat" "fled_stuck" "$_ds"
                 return 1
             fi
             # If flee failed, try ending turn
@@ -311,6 +315,7 @@ for k,v in d.items():
                 local flee_ctx=$(context)
                 if [ "$flee_ctx" != "gameplay_combat" ] && [ "$flee_ctx" != "gameplay_combat_wait" ]; then
                     echo "=== COMBAT FLED (critical HP, ${round} rounds) ==="
+                    _dbg_end "do_combat" "fled_critical" "$_ds"
                     return 1
                 fi
                 # Flee failed, try end turn

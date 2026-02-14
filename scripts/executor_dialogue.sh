@@ -292,9 +292,8 @@ print('  You can NOTE anything interesting: note \"category\" \"text\"')
 }
 
 select_option() {
-    # History-aware dialogue option selection.
-    # Records current node to history, selects option, waits, shows next briefing.
-    # Usage: select_option <index>
+    local _ds=$(_dbg_ts)
+    _dbg_start "select_option" "$1"
     local index="${1:?Usage: select_option <index>}"
 
     # Record current dialogue state before selecting
@@ -312,9 +311,11 @@ select_option() {
     local ctx=$(context)
     if [ "$ctx" = "gameplay_dialogue" ]; then
         dialogue_assess
+        _dbg_end "select_option" "ok" "$_ds"
     else
         echo "(Dialogue ended — context: $ctx)"
         post_dialogue_hook
+        _dbg_end "select_option" "dialogue_ended" "$_ds"
     fi
 }
 
@@ -446,9 +447,8 @@ dialogue_muse() {
 # ─── Talk & Dialogue Hooks ───────────────────────────────────────────
 
 talk() {
-    # Auto-walk to NPC, initiate dialogue, then select options in sequence.
-    # Clears conversation history, waits for dialogue context, and shows briefing.
-    # Usage: talk <obj_id> [option1] [option2] ...
+    local _ds=$(_dbg_ts)
+    _dbg_start "talk" "$*"
     local obj_id="$1"; shift
 
     # Clear conversation history for new dialogue
@@ -460,13 +460,20 @@ talk() {
 
     if [ $# -eq 0 ]; then
         # No options specified — wait for dialogue and show briefing
-        wait_context "gameplay_dialogue" 15 || return 1
+        if ! wait_context "gameplay_dialogue" 15; then
+            _dbg_end "talk" "no_dialogue" "$_ds"
+            return 1
+        fi
         sleep 0.5
         dialogue_assess
+        _dbg_end "talk" "ok" "$_ds"
     else
         # Options specified — select them in sequence with history tracking
         for opt in "$@"; do
-            wait_context "gameplay_dialogue" 15 || return 1
+            if ! wait_context "gameplay_dialogue" 15; then
+                _dbg_end "talk" "lost_dialogue" "$_ds"
+                return 1
+            fi
             sleep 0.5
             _dialogue_history_append "$opt"
             cmd "{\"type\":\"select_dialogue\",\"index\":$opt}"
@@ -474,6 +481,7 @@ talk() {
         done
         # Auto-capture dialogue info when conversation ends
         post_dialogue_hook
+        _dbg_end "talk" "ok" "$_ds"
     fi
 }
 

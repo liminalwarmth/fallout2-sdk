@@ -3213,6 +3213,8 @@ void processCommands()
         } else {
             gCommandFailureCounts.erase(type);
         }
+
+        agentDebugLogCommand(type, cmd, gAgentLastCommandDebug, isFailure);
     }
 }
 

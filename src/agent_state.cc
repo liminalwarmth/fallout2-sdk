@@ -1886,6 +1886,8 @@ void writeState()
     state["game_mode_flags"] = decodeGameModeFlags(gameMode);
     state["game_state"] = gameGetState();
     state["test_mode"] = gAgentTestMode;
+    if (!gAgentSessionId.empty())
+        state["session_id"] = gAgentSessionId;
     state["mouse"] = { { "x", mouseX }, { "y", mouseY } };
     state["screen"] = { { "width", screenGetWidth() }, { "height", screenGetHeight() } };
 

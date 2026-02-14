@@ -11,6 +11,11 @@ GAME_DIR="${CLAUDE_PROJECT_DIR}/game"
 STATE="$GAME_DIR/agent_state.json"
 CMD="$GAME_DIR/agent_cmd.json"
 TMP="$GAME_DIR/agent_cmd.tmp"
+DEBUG_DIR="$GAME_DIR/debug"
+HOOK_LOG="$DEBUG_DIR/hook.ndjson"
+
+_hook_ts() { date +%s000; }
+_hook_log() { [ -d "$DEBUG_DIR" ] && echo "$1" >> "$HOOK_LOG" 2>/dev/null; }
 
 # Read hook input from stdin
 INPUT=$(cat)
@@ -23,14 +28,25 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 if [ "$HOOK_EVENT" = "Stop" ] && [ "$STOP_ACTIVE" = "true" ]; then exit 0; fi
 
 # Bail if game isn't running or no state file
-if [ ! -f "$STATE" ]; then exit 0; fi
+if [ ! -f "$STATE" ]; then
+    _hook_log "{\"ts\":$(_hook_ts),\"event\":\"hook_skip\",\"reason\":\"no_state\",\"hook_event\":\"$HOOK_EVENT\"}"
+    exit 0
+fi
 
 # Only broadcast in gameplay contexts
 CONTEXT=$(jq -r '.context // ""' "$STATE" 2>/dev/null || echo "")
-case "$CONTEXT" in gameplay_*) ;; *) exit 0 ;; esac
+case "$CONTEXT" in gameplay_*) ;;
+    *)
+        _hook_log "{\"ts\":$(_hook_ts),\"event\":\"hook_skip\",\"reason\":\"wrong_context\",\"context\":\"$CONTEXT\",\"hook_event\":\"$HOOK_EVENT\"}"
+        exit 0
+    ;;
+esac
 
 # Bail if no transcript
-if [ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ]; then exit 0; fi
+if [ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ]; then
+    _hook_log "{\"ts\":$(_hook_ts),\"event\":\"hook_skip\",\"reason\":\"no_transcript\",\"hook_event\":\"$HOOK_EVENT\"}"
+    exit 0
+fi
 
 # Track how far we've read in the transcript (per session)
 TRACK_FILE="/tmp/fallout2_float_${SESSION_ID:-unknown}"
@@ -119,7 +135,13 @@ PYEOF
 python3 "$PYSCRIPT" "$TRANSCRIPT" "$LAST_LINE" "$TRACK_FILE" "$TEXTS_FILE" 2>/dev/null
 
 # Nothing to send
-if [ ! -f "$TEXTS_FILE" ] || [ ! -s "$TEXTS_FILE" ]; then exit 0; fi
+if [ ! -f "$TEXTS_FILE" ] || [ ! -s "$TEXTS_FILE" ]; then
+    _hook_log "{\"ts\":$(_hook_ts),\"event\":\"hook_skip\",\"reason\":\"no_new_text\",\"hook_event\":\"$HOOK_EVENT\"}"
+    exit 0
+fi
+
+BLOCK_COUNT=$(wc -l < "$TEXTS_FILE" 2>/dev/null | tr -d ' ')
+_hook_log "{\"ts\":$(_hook_ts),\"event\":\"hook\",\"hook_event\":\"$HOOK_EVENT\",\"context\":\"$CONTEXT\",\"blocks_sent\":$BLOCK_COUNT}"
 
 # Send each text block as a separate float_thought command
 while IFS= read -r cmd_json; do

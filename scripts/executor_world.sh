@@ -44,6 +44,8 @@ move_and_wait() {
     # Move to tile, wait for arrival. Returns 0 on success, 1 on timeout.
     # Automatically retries up to 3 times on failure (pathfinding limit ~20 hexes).
     # Detects map transitions (exit grids) and reports them.
+    local _ds=$(_dbg_ts)
+    _dbg_start "move_and_wait" "$1"
     local tile="$1" mode="${2:-run_to}" max_retries="${3:-3}"
     local attempt=0
     local start_map=$(field "map.name")
@@ -55,6 +57,7 @@ move_and_wait() {
         sleep 0.3
         if ! wait_idle; then
             echo "WARN: move_and_wait timed out moving to tile $tile" >&2
+            _dbg_end "move_and_wait" "timeout" "$_ds"
             return 1
         fi
 
@@ -64,12 +67,14 @@ move_and_wait() {
         if [ "$cur_map" != "$start_map" ] || [ "$cur_elev" != "$start_elev" ]; then
             echo "MAP TRANSITION: $start_map elev=$start_elev -> $cur_map elev=$cur_elev (tile $(field 'player.tile'))"
             post_transition_hook
+            _dbg_end "move_and_wait" "transition" "$_ds"
             return 0
         fi
 
         local cur=$(field "player.tile")
         if [ "$cur" = "$tile" ]; then
             echo "Arrived at tile $cur"
+            _dbg_end "move_and_wait" "ok" "$_ds"
             return 0
         fi
 
@@ -82,6 +87,7 @@ move_and_wait() {
                 continue
             else
                 echo "WARN: move_and_wait stuck at $cur after $max_retries retries (target $tile)" >&2
+                _dbg_end "move_and_wait" "stuck" "$_ds"
                 return 1
             fi
         fi
@@ -94,23 +100,18 @@ move_and_wait() {
             continue
         else
             echo "Moved to tile $cur (target was $tile, close enough after $max_retries retries)"
+            _dbg_end "move_and_wait" "partial" "$_ds"
             return 0
         fi
     done
     echo "WARN: move_and_wait failed after $max_retries retries (at tile $(field 'player.tile'), target $tile)" >&2
+    _dbg_end "move_and_wait" "fail" "$_ds"
     return 1
 }
 
 navigate_to() {
-    # Navigate to a tile using the engine's built-in pathfinding and waypoint system.
-    # The engine A* (8000-node limit) computes the full path, then move_to/run_to
-    # automatically queues waypoints and walks the entire route.
-    # Monitors for map transitions (exit grids) and stuck states.
-    #
-    # Usage: navigate_to <tile> [mode]
-    #   tile: destination tile number
-    #   mode: "run_to" (default) or "move_to"
-    # Returns 0 on success (or map transition), 1 on failure (no path / stuck).
+    local _ds=$(_dbg_ts)
+    _dbg_start "navigate_to" "$1"
     local dest_tile="$1" mode="${2:-run_to}"
     local start_map=$(field "map.name")
     local start_elev=$(field "map.elevation")
@@ -118,6 +119,7 @@ navigate_to() {
 
     if [ "$cur_tile" = "$dest_tile" ]; then
         echo "Already at tile $dest_tile"
+        _dbg_end "navigate_to" "already_there" "$_ds"
         return 0
     fi
 
@@ -132,6 +134,7 @@ navigate_to() {
     local dbg=$(last_debug)
     if [[ "$dbg" == *"no path"* ]]; then
         echo "  No path: $dbg"
+        _dbg_end "navigate_to" "no_path" "$_ds"
         return 1
     fi
 
@@ -149,6 +152,7 @@ navigate_to() {
         if [ "$cur_map" != "$start_map" ] || [ "$cur_elev" != "$start_elev" ]; then
             echo "  MAP TRANSITION: $start_map -> $cur_map elev=$cur_elev (tile $(field 'player.tile'))"
             post_transition_hook
+            _dbg_end "navigate_to" "transition" "$_ds"
             return 0
         fi
 
@@ -156,6 +160,7 @@ navigate_to() {
         cur_tile=$(field "player.tile")
         if [ "$cur_tile" = "$dest_tile" ]; then
             echo "=== NAVIGATE: arrived at $dest_tile ==="
+            _dbg_end "navigate_to" "ok" "$_ds"
             return 0
         fi
 
@@ -166,11 +171,13 @@ navigate_to() {
             # Movement stopped — check if we made it
             if [ "$cur_tile" = "$dest_tile" ]; then
                 echo "=== NAVIGATE: arrived at $dest_tile ==="
+                _dbg_end "navigate_to" "ok" "$_ds"
                 return 0
             fi
             # Stopped but not at destination — path was blocked or partial
             echo "  Movement stopped at $cur_tile (target $dest_tile)"
             echo "  Debug: $(last_debug)"
+            _dbg_end "navigate_to" "blocked" "$_ds"
             return 1
         fi
 
@@ -179,6 +186,7 @@ navigate_to() {
             stuck_count=$((stuck_count + 1))
             if [ $stuck_count -ge 20 ]; then  # 10 seconds stuck
                 echo "  STUCK at tile $cur_tile for 10s"
+                _dbg_end "navigate_to" "stuck" "$_ds"
                 return 1
             fi
         else
@@ -190,18 +198,15 @@ navigate_to() {
     done
 
     echo "  TIMEOUT (60s) at tile $(field 'player.tile')"
+    _dbg_end "navigate_to" "timeout" "$_ds"
     return 1
 }
 
 # ─── Exit Through ────────────────────────────────────────────────────
 
 exit_through() {
-    # Navigate to the nearest exit grid and walk through it.
-    # The engine pathfinder computes the full route; navigate_to monitors
-    # for the map transition when the player walks onto the exit grid.
-    # Args: $1 = destination filter (substring match) or "any" (default)
-    #       $2 = max exit grids to try (default 5)
-    # Returns 0 on successful map transition, 1 on failure.
+    local _ds=$(_dbg_ts)
+    _dbg_start "exit_through" "${1:-any}"
     local dest="${1:-any}" max_tries="${2:-5}"
     local cur_map=$(field "map.name")
     local cur_elev=$(field "map.elevation")
@@ -222,6 +227,7 @@ for e in exits:
 
     if [ -z "$exits" ]; then
         echo "  No exit grids found matching '$dest'"
+        _dbg_end "exit_through" "no_exits" "$_ds"
         return 1
     fi
 
@@ -239,6 +245,7 @@ for e in exits:
         local new_elev=$(field "map.elevation")
         if [ "$new_map" != "$cur_map" ] || [ "$new_elev" != "$cur_elev" ]; then
             echo "=== EXIT_THROUGH: transitioned to $new_map elev=$new_elev ==="
+            _dbg_end "exit_through" "ok" "$_ds"
             return 0
         fi
 
@@ -246,25 +253,24 @@ for e in exits:
     done <<< "$exits"
 
     echo "=== EXIT_THROUGH: FAILED after $attempt attempts (still on $cur_map) ==="
+    _dbg_end "exit_through" "fail" "$_ds"
     return 1
 }
 
 # ─── Equip & Use ─────────────────────────────────────────────────────
 
 equip_and_use() {
-    # Equip an item to a hand slot, switch to that hand, and use it —
-    # the player-like way to use any equippable item (explosives, flares, etc.)
-    #
-    # Usage: equip_and_use <item_pid> [hand] [timer_seconds]
-    #   hand: "left" or "right" (default: right)
-    #   timer_seconds: only for explosives (10-180, default: 30)
+    local _ds=$(_dbg_ts)
+    _dbg_start "equip_and_use" "$*"
     if [ -z "$1" ]; then
         echo "Usage: equip_and_use <item_pid> [hand] [timer_seconds]"
+        _dbg_end "equip_and_use" "bad_args" "$_ds"
         return 1
     fi
     local item_pid="$1" hand="${2:-right}" timer_seconds="${3:-}"
     if [ "$hand" != "left" ] && [ "$hand" != "right" ]; then
         echo "Usage: equip_and_use <item_pid> [left|right] [timer_seconds]"
+        _dbg_end "equip_and_use" "bad_args" "$_ds"
         return 1
     fi
 
@@ -292,13 +298,14 @@ equip_and_use() {
     fi
     sleep 0.5
     wait_tick_advance 5
+    _dbg_end "equip_and_use" "ok" "$_ds"
 }
 
 # ─── Exploration ─────────────────────────────────────────────────────
 
 explore_area() {
-    # Systematically loot containers and pick up ground items within range.
-    # Args: $1 = max distance to consider (default 25)
+    local _ds=$(_dbg_ts)
+    _dbg_start "explore_area" "${1:-25}"
     local max_dist="${1:-25}"
 
     echo "=== EXPLORE_AREA (max_dist=$max_dist) ==="
@@ -351,6 +358,7 @@ for r in results:
 
     if [ -z "$targets" ]; then
         echo "  No containers or ground items within $max_dist hexes"
+        _dbg_end "explore_area" "empty" "$_ds"
         return 0
     fi
 
@@ -381,13 +389,14 @@ for r in results:
         muse "Nothing worth taking. Disappointing."
         sleep 1
     fi
+    _dbg_end "explore_area" "ok" "$_ds"
 }
 
 # ─── Interaction ──────────────────────────────────────────────────────
 
 examine() {
-    # Auto-walk to object, look at it, and report the result from message_log.
-    # Args: $1 = object id
+    local _ds=$(_dbg_ts)
+    _dbg_start "examine" "$1"
     local obj_id="$1"
 
     _walk_to_object "$obj_id" || true
@@ -406,6 +415,7 @@ if msgs:
     local dbg=$(last_debug)
     echo "Examine result: $result"
     echo "Debug: $dbg"
+    _dbg_end "examine" "ok" "$_ds"
 }
 
 check_inventory() {
@@ -428,21 +438,23 @@ else:
 }
 
 interact() {
-    # Auto-walk to object, use it, and wait for idle.
-    # Args: $1 = object id
+    local _ds=$(_dbg_ts)
+    _dbg_start "interact" "$1"
     local obj_id="$1"
     _walk_to_object "$obj_id" || true
     cmd "{\"type\":\"use_object\",\"object_id\":$obj_id}"
     sleep 1
     wait_idle
+    _dbg_end "interact" "ok" "$_ds"
 }
 
 use_skill() {
-    # Apply a skill to an object, or self if object id omitted.
-    # Args: $1 = skill name, $2 = object id (optional)
+    local _ds=$(_dbg_ts)
+    _dbg_start "use_skill" "$1 ${2:-}"
     local skill="$1" obj_id="${2:-}"
     if [ -z "$skill" ]; then
         echo "Usage: use_skill <skill> [object_id]"
+        _dbg_end "use_skill" "bad_args" "$_ds"
         return 1
     fi
     if [ -n "$obj_id" ]; then
@@ -453,22 +465,25 @@ use_skill() {
     fi
     sleep 1.5
     wait_idle
+    _dbg_end "use_skill" "ok" "$_ds"
 }
 
 use_item_on() {
-    # Auto-walk to object, use an inventory item on it, and wait for idle.
-    # Args: $1 = item pid, $2 = object id
+    local _ds=$(_dbg_ts)
+    _dbg_start "use_item_on" "$1 $2"
     local item_pid="$1" obj_id="$2"
     _walk_to_object "$obj_id" || true
     cmd "{\"type\":\"use_item_on\",\"item_pid\":$item_pid,\"object_id\":$obj_id}"
     sleep 1.5
     wait_idle
+    _dbg_end "use_item_on" "ok" "$_ds"
 }
 
 # ─── Loot ─────────────────────────────────────────────────────────────
 
 loot() {
-    # Auto-walk to container, open, take all, close. Args: $1 = object id
+    local _ds=$(_dbg_ts)
+    _dbg_start "loot" "$1"
     local obj_id="$1"
 
     _walk_to_object "$obj_id" || echo "  WARN: couldn't reach container, trying anyway"
@@ -481,7 +496,10 @@ print(','.join(f\"{i['pid']}:{i.get('quantity',1)}\" for i in inv))
 
     cmd "{\"type\":\"open_container\",\"object_id\":$obj_id}"
     sleep 1.5
-    wait_context "gameplay_loot" 20 || return 1
+    if ! wait_context "gameplay_loot" 20; then
+        _dbg_end "loot" "no_loot_ctx" "$_ds"
+        return 1
+    fi
 
     # Wait one tick for loot state to fully populate
     wait_tick_advance 3
@@ -532,14 +550,14 @@ else:
     print('Nothing gained')
 ")
     echo "$gained"
+    _dbg_end "loot" "ok" "$_ds"
 }
 
 # ─── Healing ─────────────────────────────────────────────────────────
 
 heal_to_full() {
-    # Loop healing until HP=max or no items left.
-    # Tries Healing Powder (pid=81, cheaper) then Stimpak (pid=40) each iteration.
-    # Single py() call per iteration for performance.
+    local _ds=$(_dbg_ts)
+    _dbg_start "heal_to_full" ""
     local max_loops=10
     local i=0
     while [ $i -lt $max_loops ]; do
@@ -561,10 +579,12 @@ print(f\"{hp}\t{max_hp}\t{pid}\t{name}\")
 
         if [ "$hp" -ge "$max_hp" ] 2>/dev/null; then
             echo "HP full ($hp/$max_hp)"
+            _dbg_end "heal_to_full" "ok" "$_ds"
             return 0
         fi
         if [ "$heal_pid" = "0" ] || [ -z "$heal_name" ]; then
             echo "No healing items (HP $hp/$max_hp)"
+            _dbg_end "heal_to_full" "no_items" "$_ds"
             return 1
         fi
 
@@ -575,6 +595,7 @@ print(f\"{hp}\t{max_hp}\t{pid}\t{name}\")
         i=$((i + 1))
     done
     echo "Heal loop limit reached"
+    _dbg_end "heal_to_full" "limit" "$_ds"
 }
 
 heal_companion() {
