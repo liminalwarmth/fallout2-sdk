@@ -13,6 +13,17 @@ import os
 import sys
 import time
 
+def resolve_project_dir():
+    # Support both Claude and Codex style environments.
+    for key in ("CLAUDE_PROJECT_DIR", "CODEX_PROJECT_DIR", "PROJECT_ROOT", "PWD"):
+        val = os.environ.get(key, "")
+        if val:
+            return val
+
+    # Fallback: repo root relative to this script.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(script_dir)
+
 def main():
     # Drain stdin (hook input — not needed)
     try:
@@ -21,11 +32,7 @@ def main():
         pass
 
     # Locate state file
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
-    if not project_dir:
-        # Fallback: try to find game dir relative to this script
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        project_dir = os.path.dirname(script_dir)
+    project_dir = resolve_project_dir()
 
     state_path = os.path.join(project_dir, "game", "agent_state.json")
 

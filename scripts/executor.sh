@@ -22,8 +22,8 @@
 # should only act within these bounds — no engine cheats, no metagaming.
 #
 # EXPLORATION (gameplay_exploration context)
-#   move_to <tile>          — walk to tile (pathfinding, max ~20 hexes)
-#   run_to <tile>           — run to tile (faster, same pathfind limit)
+#   move_to <tile>          — walk to tile (full A* pathfinding)
+#   run_to <tile>           — run to tile (faster, same pathfinding)
 #   use_object <id>         — interact with doors, switches, ladders, etc.
 #   pick_up <id>            — pick up a ground item
 #   look_at <id>            — examine an object (reads description)
@@ -147,7 +147,7 @@
 # LOOTING:        loot <id> (single container) or explore_area (sweep all nearby)
 # NPC:            talk <id> → dialogue_assess → select_option <n> → dialogue_muse
 #                 Or batch: talk <id> <opt1> <opt2> ... for quick dialogue
-# NAVIGATION:     move_and_wait <tile>, exit_through "<dest>"
+# NAVIGATION:     move_and_wait <tile>, move_and_wait exit "<dest>"
 # SAVE:           save_before "label" — always before lockpick, combat, explosives
 # LEVEL-UP:       character_screen → skill_add per point → perk_add if available
 # CHAR CREATE:    main_menu new_game → skip movies → char_selector_select →
@@ -835,7 +835,6 @@ executor_help() {
     echo "ACT (goal-oriented):"
     echo "  explore_area [dist]             — sweep + loot all nearby"
     echo "  do_combat [timeout] [crit%]     — auto-combat (engine AI, monitor loop)"
-    echo "  exit_through <dest|any>         — leave map via exit grids"
     echo "  heal_to_full                    — loop healing until HP=max"
     echo "  heal_companion <id> [pid]       — use healing item on companion/NPC"
     echo "  doctor_companion <id>           — apply Doctor skill to companion/NPC"
@@ -848,13 +847,36 @@ executor_help() {
     echo "  equip_and_use <pid> [hand] [t]  — equip + switch hand + use"
     echo "  check_ammo                      — active weapon ammo + compatible ammo"
     echo "  reload [ammo_pid]               — reload (optionally with specific ammo)"
+    echo "  rest [hours]                    — native rest/time pass (interrupt-aware)"
     echo "  sneak_on / sneak_off            — idempotent sneak toggle"
-    echo "  move_and_wait <tile>            — walk to tile (positioning)"
+    echo "  move_and_wait <tile>            — move to tile (polls for arrival/transition)"
+    echo "  move_and_wait exit [dest]       — leave map via nearest exit grid"
+    echo ""
+    echo "WORLD MAP:"
+    echo "  worldmap_travel <area_id>       — start native worldmap walking"
+    echo "  worldmap_wait [timeout]         — wait for worldmap walk completion"
+    echo "  worldmap_enter_location <a> [e] — enter area by id/entrance"
+    echo ""
+    echo "QUERY:"
+    echo "  find_path <to> [from]           — native path query (len + waypoints)"
+    echo "  tile_objects <tile> [radius]    — inspect objects near tile"
+    echo "  find_item <pid>                 — locate PID across map/inventory"
+    echo "  list_all_items                  — sample items/containers on elevation"
     echo ""
     echo "DIALOGUE:"
     echo "  dialogue_assess                 — structured briefing (NPC, options, quests)"
     echo "  select_option <index>           — choose option + track history + show next"
     echo "  dialogue_muse                   — Sonnet in-character reaction (background)"
+    echo "  barter_status                   — current barter tables + trade info"
+    echo "  barter_offer <pid> [qty]        — move item to your offer table"
+    echo "  barter_request <pid> [qty]      — move merchant item to request table"
+    echo "  barter_remove_offer <p> [qty]   — remove from your offer"
+    echo "  barter_remove_request <p> [qty] — remove from merchant request"
+    echo "  barter_confirm                  — native confirm (engine transaction)"
+    echo "  barter_talk / barter_cancel     — return to dialogue / cancel barter"
+    echo ""
+    echo "COMBAT AI:"
+    echo "  configure_combat_ai k v [...]   — tune engine auto-combat packet options"
     echo ""
     echo "SAVE/LOAD:"
     echo "  quicksave / quickload           — save/load game"

@@ -40,28 +40,133 @@ for cat in ['critters', 'scenery', 'ground_items', 'exit_grids', 'items']:
 
 # ─── Movement ─────────────────────────────────────────────────────────
 
-move_and_wait() {
-    # Move to tile, wait for arrival. Returns 0 on success, 1 on timeout.
-    # Automatically retries up to 3 times on failure (pathfinding limit ~20 hexes).
-    # Detects map transitions (exit grids) and reports them.
-    local _ds=$(_dbg_ts)
-    _dbg_start "move_and_wait" "$1"
-    local tile="$1" mode="${2:-run_to}" max_retries="${3:-3}"
-    local attempt=0
-    local start_map=$(field "map.name")
-    local start_elev=$(field "map.elevation")
+_report_nearby_obstacles() {
+    # Report nearby scenery (doors, containers) when movement stops short.
+    # Args: $1=current_tile, $2=target_tile
+    py "
+objs = d.get('objects', {}).get('scenery', [])
+nearby = [s for s in objs if s.get('distance', 999) <= 5]
+nearby.sort(key=lambda s: s.get('distance', 999))
+parts = []
+for s in nearby:
+    name = s.get('name', '?')
+    sid = s.get('id', '?')
+    tile = s.get('tile', '?')
+    stype = s.get('scenery_type', '?')
+    extra = ''
+    if stype == 'door':
+        extra = f' locked={s.get(\"locked\", \"?\")} open={s.get(\"open\", \"?\")}'
+    elif s.get('item_count', 0) > 0:
+        extra = f' items={s.get(\"item_count\")}'
+    parts.append(f'{name} id={sid} tile={tile} type={stype}{extra}')
+msg = f'BLOCKED at tile $1 (target $2).'
+if parts:
+    msg += ' Nearby: ' + '; '.join(parts)
+print(msg)
+"
+}
 
-    while [ $attempt -le $max_retries ]; do
-        local before=$(field "player.tile")
-        cmd "{\"type\":\"$mode\",\"tile\":$tile}"
-        sleep 0.3
-        if ! wait_idle; then
-            echo "WARN: move_and_wait timed out moving to tile $tile" >&2
-            _dbg_end "move_and_wait" "timeout" "$_ds"
+move_and_wait() {
+    # Unified movement function.
+    #   move_and_wait <tile>              — move to a specific tile
+    #   move_and_wait exit [dest_filter]  — find nearest exit grid, move to it
+    #
+    # Returns: 0=arrived/transitioned, 1=failed, 2=combat interrupt
+    local _ds=$(_dbg_ts)
+
+    # ── Exit mode ──
+    if [ "$1" = "exit" ]; then
+        local dest_filter="${2:-any}"
+        _dbg_start "move_and_wait" "exit $dest_filter"
+        local cur_map=$(field "map.name")
+        local cur_elev=$(field "map.elevation")
+
+        echo "=== MOVE EXIT: looking for exit to '$dest_filter' (current: $cur_map elev=$cur_elev) ==="
+
+        # Get exit grids sorted by distance
+        local exits=$(py "
+exits = d.get('objects', {}).get('exit_grids', [])
+dest = '''$dest_filter'''
+if dest != 'any':
+    exits = [e for e in exits if dest.lower() in e.get('destination_map_name', '').lower()]
+exits.sort(key=lambda e: e.get('distance', 999))
+for e in exits:
+    print(f\"{e.get('tile')}\t{e.get('destination_map_name', '?')}\t{e.get('distance', 999)}\")
+")
+
+        if [ -z "$exits" ]; then
+            echo "  No exit grids found matching '$dest_filter'"
+            _dbg_end "move_and_wait" "no_exits" "$_ds"
             return 1
         fi
 
-        # Check for map transition FIRST
+        local attempt=0
+        while IFS=$'\t' read -r exit_tile dest_name dist; do
+            [ $attempt -ge 5 ] && break
+            attempt=$((attempt + 1))
+
+            echo "  Attempt $attempt: exit tile $exit_tile -> $dest_name (dist=$dist)"
+
+            # Use tile-mode movement (recursive call)
+            move_and_wait "$exit_tile"
+            local result=$?
+
+            # Check if map changed
+            local new_map=$(field "map.name")
+            local new_elev=$(field "map.elevation")
+            if [ "$new_map" != "$cur_map" ] || [ "$new_elev" != "$cur_elev" ]; then
+                echo "=== MOVE EXIT: transitioned to $new_map elev=$new_elev ==="
+                _end_status
+                _dbg_end "move_and_wait" "exit_ok" "$_ds"
+                return 0
+            fi
+
+            if [ $result -eq 2 ]; then
+                _dbg_end "move_and_wait" "exit_combat" "$_ds"
+                return 2
+            fi
+
+            [ $result -ne 0 ] && echo "  Exit tile $exit_tile: failed, trying next..."
+        done <<< "$exits"
+
+        echo "=== MOVE EXIT: FAILED after $attempt attempts (still on $cur_map) ==="
+        _dbg_end "move_and_wait" "exit_fail" "$_ds"
+        return 1
+    fi
+
+    # ── Tile mode ──
+    local tile="$1"
+    _dbg_start "move_and_wait" "$tile"
+    local start_map=$(field "map.name")
+    local start_elev=$(field "map.elevation")
+    local cur_tile=$(field "player.tile")
+
+    if [ "$cur_tile" = "$tile" ]; then
+        echo "Already at tile $tile"
+        _dbg_end "move_and_wait" "already_there" "$_ds"
+        return 0
+    fi
+
+    # Issue the move command — engine handles full A* pathfinding + waypoint segmentation
+    cmd "{\"type\":\"run_to\",\"tile\":$tile}"
+    sleep 0.3
+
+    # Check immediate failure
+    local dbg=$(last_debug)
+    if [[ "$dbg" == *"no path"* ]]; then
+        echo "No path to tile $tile: $dbg"
+        _report_nearby_obstacles "$cur_tile" "$tile"
+        _dbg_end "move_and_wait" "no_path" "$_ds"
+        return 1
+    fi
+
+    # Poll loop: max 60s (120 x 0.5s)
+    local last_tile="$cur_tile"
+    local stuck_count=0
+    local max_wait=120
+
+    for i in $(seq 1 $max_wait); do
+        # Check for map transition (exit grids)
         local cur_map=$(field "map.name")
         local cur_elev=$(field "map.elevation")
         if [ "$cur_map" != "$start_map" ] || [ "$cur_elev" != "$start_elev" ]; then
@@ -71,123 +176,41 @@ move_and_wait() {
             return 0
         fi
 
-        local cur=$(field "player.tile")
-        if [ "$cur" = "$tile" ]; then
-            echo "Arrived at tile $cur"
+        # Check for combat interrupt
+        local ctx=$(context)
+        if [[ "$ctx" == gameplay_combat* ]]; then
+            cur_tile=$(field "player.tile")
+            echo "COMBAT INTERRUPT at tile $cur_tile (target was $tile)"
+            _dbg_end "move_and_wait" "combat" "$_ds"
+            return 2
+        fi
+
+        # Check if we've arrived
+        cur_tile=$(field "player.tile")
+        if [ "$cur_tile" = "$tile" ]; then
+            echo "Arrived at tile $tile"
             _end_status
             _dbg_end "move_and_wait" "ok" "$_ds"
             return 0
         fi
 
-        # Check if we moved at all
-        if [ "$cur" = "$before" ]; then
-            if [ $attempt -lt $max_retries ]; then
-                attempt=$((attempt + 1))
-                echo "  Move failed (stuck at $cur), retry $attempt/$max_retries..."
-                sleep 0.5
-                continue
-            else
-                echo "WARN: move_and_wait stuck at $cur after $max_retries retries (target $tile)" >&2
-                _dbg_end "move_and_wait" "stuck" "$_ds"
-                return 1
-            fi
-        fi
-
-        # We moved but didn't reach target — retry from new position
-        if [ $attempt -lt $max_retries ]; then
-            attempt=$((attempt + 1))
-            echo "  Partial move to $cur (target $tile), retry $attempt/$max_retries..."
-            sleep 0.3
-            continue
-        else
-            echo "Moved to tile $cur (target was $tile, close enough after $max_retries retries)"
-            _dbg_end "move_and_wait" "partial" "$_ds"
-            return 0
-        fi
-    done
-    echo "WARN: move_and_wait failed after $max_retries retries (at tile $(field 'player.tile'), target $tile)" >&2
-    _dbg_end "move_and_wait" "fail" "$_ds"
-    return 1
-}
-
-navigate_to() {
-    local _ds=$(_dbg_ts)
-    _dbg_start "navigate_to" "$1"
-    local dest_tile="$1" mode="${2:-run_to}"
-    local start_map=$(field "map.name")
-    local start_elev=$(field "map.elevation")
-    local cur_tile=$(field "player.tile")
-
-    if [ "$cur_tile" = "$dest_tile" ]; then
-        echo "Already at tile $dest_tile"
-        _dbg_end "navigate_to" "already_there" "$_ds"
-        return 0
-    fi
-
-    echo "=== NAVIGATE: $cur_tile -> $dest_tile (mode=$mode) ==="
-
-    # Issue the move command — the engine computes the full A* path internally
-    # and queues waypoints (~16 tiles per segment) for the animation system.
-    cmd "{\"type\":\"$mode\",\"tile\":$dest_tile}"
-    sleep 0.3
-
-    # Check if path was found
-    local dbg=$(last_debug)
-    if [[ "$dbg" == *"no path"* ]]; then
-        echo "  No path: $dbg"
-        _dbg_end "navigate_to" "no_path" "$_ds"
-        return 1
-    fi
-
-    echo "  Path found: $dbg"
-
-    # Wait for the movement to complete, monitoring for map transitions and stuck states.
-    local last_tile="$cur_tile"
-    local stuck_count=0
-    local max_wait=120  # 120 half-second polls = 60 seconds max
-
-    for i in $(seq 1 $max_wait); do
-        # Check for map transition (exit grids)
-        local cur_map=$(field "map.name")
-        local cur_elev=$(field "map.elevation")
-        if [ "$cur_map" != "$start_map" ] || [ "$cur_elev" != "$start_elev" ]; then
-            echo "  MAP TRANSITION: $start_map -> $cur_map elev=$cur_elev (tile $(field 'player.tile'))"
-            post_transition_hook
-            _dbg_end "navigate_to" "transition" "$_ds"
-            return 0
-        fi
-
-        # Check if we've arrived
-        cur_tile=$(field "player.tile")
-        if [ "$cur_tile" = "$dest_tile" ]; then
-            echo "=== NAVIGATE: arrived at $dest_tile ==="
-            _dbg_end "navigate_to" "ok" "$_ds"
-            return 0
-        fi
-
-        # Check if still moving
+        # Check if movement stopped (not busy + no waypoints remaining)
         local busy=$(field "player.animation_busy")
         local remaining=$(field "player.movement_waypoints_remaining")
         if [ "$busy" = "false" ] && { [ "$remaining" = "null" ] || [ "$remaining" = "0" ]; }; then
-            # Movement stopped — check if we made it
-            if [ "$cur_tile" = "$dest_tile" ]; then
-                echo "=== NAVIGATE: arrived at $dest_tile ==="
-                _dbg_end "navigate_to" "ok" "$_ds"
-                return 0
-            fi
-            # Stopped but not at destination — path was blocked or partial
-            echo "  Movement stopped at $cur_tile (target $dest_tile)"
-            echo "  Debug: $(last_debug)"
-            _dbg_end "navigate_to" "blocked" "$_ds"
+            # Movement done but not at target — blocked
+            _report_nearby_obstacles "$cur_tile" "$tile"
+            _dbg_end "move_and_wait" "blocked" "$_ds"
             return 1
         fi
 
-        # Stuck detection: same tile for too long
+        # Stuck detection: same tile for 10s (20 x 0.5s)
         if [ "$cur_tile" = "$last_tile" ]; then
             stuck_count=$((stuck_count + 1))
-            if [ $stuck_count -ge 20 ]; then  # 10 seconds stuck
-                echo "  STUCK at tile $cur_tile for 10s"
-                _dbg_end "navigate_to" "stuck" "$_ds"
+            if [ $stuck_count -ge 20 ]; then
+                echo "STUCK at tile $cur_tile for 10s (target $tile)"
+                _report_nearby_obstacles "$cur_tile" "$tile"
+                _dbg_end "move_and_wait" "stuck" "$_ds"
                 return 1
             fi
         else
@@ -198,64 +221,8 @@ navigate_to() {
         sleep 0.5
     done
 
-    echo "  TIMEOUT (60s) at tile $(field 'player.tile')"
-    _dbg_end "navigate_to" "timeout" "$_ds"
-    return 1
-}
-
-# ─── Exit Through ────────────────────────────────────────────────────
-
-exit_through() {
-    local _ds=$(_dbg_ts)
-    _dbg_start "exit_through" "${1:-any}"
-    local dest="${1:-any}" max_tries="${2:-5}"
-    local cur_map=$(field "map.name")
-    local cur_elev=$(field "map.elevation")
-
-    echo "=== EXIT_THROUGH: looking for exit to '$dest' (current: $cur_map elev=$cur_elev) ==="
-
-    # Get exit grids sorted by distance
-    local exits=$(py "
-import json
-exits = d.get('objects', {}).get('exit_grids', [])
-dest = '''$dest'''
-if dest != 'any':
-    exits = [e for e in exits if dest.lower() in e.get('destination_map_name', '').lower()]
-exits.sort(key=lambda e: e.get('distance', 999))
-for e in exits:
-    print(f\"{e.get('tile')}\t{e.get('destination_map_name', '?')}\t{e.get('distance', 999)}\")
-")
-
-    if [ -z "$exits" ]; then
-        echo "  No exit grids found matching '$dest'"
-        _dbg_end "exit_through" "no_exits" "$_ds"
-        return 1
-    fi
-
-    local attempt=0
-    while IFS=$'\t' read -r tile dest_name dist; do
-        [ $attempt -ge $max_tries ] && break
-        attempt=$((attempt + 1))
-
-        echo "  Attempt $attempt: navigate to exit tile $tile -> $dest_name (dist=$dist)"
-        navigate_to "$tile"
-        local result=$?
-
-        # Check if map changed (navigate_to detects this too, but double-check)
-        local new_map=$(field "map.name")
-        local new_elev=$(field "map.elevation")
-        if [ "$new_map" != "$cur_map" ] || [ "$new_elev" != "$cur_elev" ]; then
-            echo "=== EXIT_THROUGH: transitioned to $new_map elev=$new_elev ==="
-            _end_status
-            _dbg_end "exit_through" "ok" "$_ds"
-            return 0
-        fi
-
-        [ $result -ne 0 ] && echo "  Exit tile $tile: no path or stuck, trying next..."
-    done <<< "$exits"
-
-    echo "=== EXIT_THROUGH: FAILED after $attempt attempts (still on $cur_map) ==="
-    _dbg_end "exit_through" "fail" "$_ds"
+    echo "TIMEOUT (60s) at tile $(field 'player.tile') (target $tile)"
+    _dbg_end "move_and_wait" "timeout" "$_ds"
     return 1
 }
 
@@ -373,9 +340,6 @@ for r in results:
             sleep 0.5
         elif [ "$obj_type" = "ground_item" ]; then
             echo "  Picking up $obj_name (id=$obj_id, dist=$obj_dist)..."
-            if [ -n "$obj_tile" ] && [ "$obj_tile" != "0" ]; then
-                move_and_wait "$obj_tile" || { echo "    WARN: couldn't reach $obj_name, skipping"; continue; }
-            fi
             cmd "{\"type\":\"pick_up\",\"object_id\":$obj_id}"
             sleep 0.5
             wait_idle 20
@@ -408,14 +372,16 @@ examine() {
     sleep 1
     wait_tick_advance 10
 
-    # Read look_at result from message_log (usually the last entry)
-    local result=$(py "
+    # Prefer bridge-captured look_at_result (engine examine callback output).
+    local result=$(field "look_at_result")
+    if [ -z "$result" ] || [ "$result" = "null" ]; then
+        result=$(py "
 msgs = d.get('message_log', [])
 if msgs:
-    # Last few messages may contain the look_at result
     for m in msgs[-3:]:
         print(m)
 ")
+    fi
     local dbg=$(last_debug)
     echo "Examine result: $result"
     echo "Debug: $dbg"
@@ -445,7 +411,6 @@ interact() {
     local _ds=$(_dbg_ts)
     _dbg_start "interact" "$1"
     local obj_id="$1"
-    _walk_to_object "$obj_id" || true
     cmd "{\"type\":\"use_object\",\"object_id\":$obj_id}"
     sleep 1
     wait_idle
@@ -463,7 +428,6 @@ use_skill() {
         return 1
     fi
     if [ -n "$obj_id" ]; then
-        _walk_to_object "$obj_id" || true
         cmd "{\"type\":\"use_skill\",\"skill\":\"$skill\",\"object_id\":$obj_id}"
     else
         cmd "{\"type\":\"use_skill\",\"skill\":\"$skill\"}"
@@ -478,7 +442,6 @@ use_item_on() {
     local _ds=$(_dbg_ts)
     _dbg_start "use_item_on" "$1 $2"
     local item_pid="$1" obj_id="$2"
-    _walk_to_object "$obj_id" || true
     cmd "{\"type\":\"use_item_on\",\"item_pid\":$item_pid,\"object_id\":$obj_id}"
     sleep 1.5
     wait_idle
@@ -492,8 +455,6 @@ loot() {
     local _ds=$(_dbg_ts)
     _dbg_start "loot" "$1"
     local obj_id="$1"
-
-    _walk_to_object "$obj_id" || echo "  WARN: couldn't reach container, trying anyway"
 
     # Snapshot inventory BEFORE looting
     local inv_before=$(py "
@@ -764,6 +725,139 @@ reload() {
     sleep 0.5
     wait_tick_advance 5 || true
     echo "$(last_debug)"
+}
+
+# ─── Engine-native wrappers ──────────────────────────────────────────
+
+rest() {
+    # Rest in-place for N hours (1..24). Engine handles interruptions.
+    local hours="${1:-1}"
+    cmd "{\"type\":\"rest\",\"hours\":$hours}"
+    sleep 0.5
+    wait_tick_advance 30 || true
+    echo "$(last_debug)"
+    _end_status
+}
+
+worldmap_travel() {
+    # Start worldmap walking to area id.
+    local area_id="${1:?Usage: worldmap_travel <area_id>}"
+    cmd "{\"type\":\"worldmap_travel\",\"area_id\":$area_id}"
+    sleep 0.3
+    wait_tick_advance 10 || true
+    echo "$(last_debug)"
+}
+
+worldmap_enter_location() {
+    # Enter area by id and optional entrance index.
+    local area_id="${1:?Usage: worldmap_enter_location <area_id> [entrance]}"
+    local entrance="${2:-0}"
+    cmd "{\"type\":\"worldmap_enter_location\",\"area_id\":$area_id,\"entrance\":$entrance}"
+    sleep 0.3
+    wait_tick_advance 10 || true
+    echo "$(last_debug)"
+}
+
+worldmap_wait() {
+    # Wait until worldmap walking completes or context changes.
+    local timeout="${1:-300}"
+    local i=0
+    while [ $i -lt "$timeout" ]; do
+        local ctx=$(context)
+        if [[ "$ctx" != gameplay_worldmap* ]]; then
+            echo "Context changed to $ctx"
+            _end_status
+            return 0
+        fi
+        local walking=$(field "worldmap.is_walking")
+        if [ "$walking" != "true" ] && [ "$walking" != "True" ]; then
+            echo "Worldmap walking complete"
+            _end_status
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    echo "WARN: worldmap_wait timeout (${timeout}s)"
+    return 1
+}
+
+find_path() {
+    # Query path existence/length and waypoint list.
+    local to_tile="${1:?Usage: find_path <to_tile> [from_tile]}"
+    local from_tile="${2:-}"
+    if [ -n "$from_tile" ]; then
+        cmd "{\"type\":\"find_path\",\"from\":$from_tile,\"to\":$to_tile}"
+    else
+        cmd "{\"type\":\"find_path\",\"to\":$to_tile}"
+    fi
+    sleep 0.2
+    wait_tick_advance 5 || true
+    py "
+q = d.get('query_result', {})
+if not isinstance(q, dict) or q.get('type') != 'find_path':
+    print('No find_path query result; debug: ' + str(d.get('last_command_debug', 'none')))
+else:
+    if q.get('path_exists'):
+        print(f\"Path exists: len={q.get('path_length', '?')} waypoints={q.get('waypoints', [])}\")
+    else:
+        print(f\"No path (len={q.get('path_length', 0)})\")
+"
+}
+
+tile_objects() {
+    # Query objects around a tile.
+    local tile="${1:?Usage: tile_objects <tile> [radius]}"
+    local radius="${2:-2}"
+    cmd "{\"type\":\"tile_objects\",\"tile\":$tile,\"radius\":$radius}"
+    sleep 0.2
+    wait_tick_advance 5 || true
+    py "
+q = d.get('query_result', {})
+if not isinstance(q, dict) or q.get('type') != 'tile_objects':
+    print('No tile_objects query result; debug: ' + str(d.get('last_command_debug', 'none')))
+else:
+    objs = q.get('objects', [])
+    if not objs:
+        print('No objects found')
+    else:
+        for o in objs:
+            print(f\"{o.get('type','?')} id={o.get('id')} pid={o.get('pid')} tile={o.get('tile')} dist={o.get('distance')} name={o.get('name','?')}\")
+"
+}
+
+find_item() {
+    # Query item PID matches on map/inventory/containers.
+    local pid="${1:?Usage: find_item <pid>}"
+    cmd "{\"type\":\"find_item\",\"pid\":$pid}"
+    sleep 0.2
+    wait_tick_advance 5 || true
+    py "
+q = d.get('query_result', {})
+if not isinstance(q, dict) or q.get('type') != 'find_item':
+    print('No find_item query result; debug: ' + str(d.get('last_command_debug', 'none')))
+else:
+    matches = q.get('matches', [])
+    print(f\"Matches: {q.get('match_count', 0)}\")
+    for m in matches:
+        print(m)
+"
+}
+
+list_all_items() {
+    # Query sampled world/container items on current elevation.
+    cmd '{"type":"list_all_items"}'
+    sleep 0.2
+    wait_tick_advance 5 || true
+    py "
+q = d.get('query_result', {})
+if not isinstance(q, dict) or q.get('type') != 'list_all_items':
+    print('No list_all_items query result; debug: ' + str(d.get('last_command_debug', 'none')))
+else:
+    print(f\"Entries: {q.get('entry_count', 0)}\")
+    for e in q.get('entries', []):
+        print(e)
+"
 }
 
 # ─── Map Transition Hook ─────────────────────────────────────────────

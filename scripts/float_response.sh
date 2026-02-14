@@ -7,7 +7,26 @@
 
 set -euo pipefail
 
-GAME_DIR="${CLAUDE_PROJECT_DIR}/game"
+_resolve_project_dir() {
+    if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+        echo "$CLAUDE_PROJECT_DIR"
+        return
+    fi
+    if [ -n "${CODEX_PROJECT_DIR:-}" ]; then
+        echo "$CODEX_PROJECT_DIR"
+        return
+    fi
+    if [ -n "${PROJECT_ROOT:-}" ]; then
+        echo "$PROJECT_ROOT"
+        return
+    fi
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+    cd "$script_dir/.." && pwd
+}
+
+PROJECT_DIR="$(_resolve_project_dir)"
+GAME_DIR="$PROJECT_DIR/game"
 STATE="$GAME_DIR/agent_state.json"
 CMD="$GAME_DIR/agent_cmd.json"
 TMP="$GAME_DIR/agent_cmd.tmp"

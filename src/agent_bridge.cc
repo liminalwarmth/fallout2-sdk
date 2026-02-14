@@ -14,11 +14,13 @@
 #include "critter.h"
 #include "debug.h"
 #include "game.h"
+#include "animation.h"
 #include "map.h"
 #include "object.h"
 #include "game_dialog.h"
 #include "game_movie.h"
 #include "input.h"
+#include "tile.h"
 #include "skill.h"
 #include "stat.h"
 #include "trait.h"
@@ -403,6 +405,7 @@ static const char* gDebugPrevContext = nullptr;
 static int gDebugPrevHP = -1;
 static bool gDebugPrevInCombat = false;
 static std::string gDebugPrevMapName;
+static unsigned int gCameraFollowNextTick = 0;
 
 static void detectStateChanges(const char* ctx)
 {
@@ -450,6 +453,20 @@ void agentBridgeTick()
     processCommands();
     processPendingAttacks();
     agentProcessQueuedMovement();
+
+    // Edge-triggered camera follow in exploration while moving.
+    // This avoids per-tile hard recentering while still pulling camera back
+    // when the player drifts too far from center.
+    // Combat camera behavior remains unchanged (engine default).
+    static const int kCameraEdgeDistance = 9;           // hexes from center
+    static const unsigned int kCameraFollowCooldown = 8; // ticks between recenter attempts
+    if (gDude != nullptr && !isInCombat() && animationIsBusy(gDude)) {
+        if (gAgentTick >= gCameraFollowNextTick
+            && tileDistanceBetween(gCenterTile, gDude->tile) >= kCameraEdgeDistance) {
+            _tile_scroll_to(gDude->tile, 2);
+            gCameraFollowNextTick = gAgentTick + kCameraFollowCooldown;
+        }
+    }
 
     // Auto-hide dialogue overlay when leaving dialogue context,
     // or re-draw every tick to stay on top of talking head animations

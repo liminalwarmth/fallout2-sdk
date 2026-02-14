@@ -2,7 +2,7 @@
 #
 # Sourced by executor.sh. Depends on: cmd, py, field, context, last_debug,
 # wait_idle, wait_tick_advance, wait_context, muse, note,
-# _walk_to_object, GAME_DIR, STATE, CMD.
+# GAME_DIR, STATE, CMD.
 
 # ─── Persona & Thought Log ────────────────────────────────────────────
 
@@ -454,7 +454,6 @@ talk() {
     # Clear conversation history for new dialogue
     _dialogue_history_clear
 
-    _walk_to_object "$obj_id" || true
     cmd "{\"type\":\"talk_to\",\"object_id\":$obj_id}"
     sleep 1.5
 
@@ -485,6 +484,92 @@ talk() {
         _end_status
         _dbg_end "talk" "ok" "$_ds"
     fi
+}
+
+# ─── Barter ───────────────────────────────────────────────────────────
+
+barter_status() {
+    # Print current barter tables and computed trade info from state.
+    py "
+b = d.get('barter', {})
+if not b:
+    print('Not in barter context')
+else:
+    print(f\"Merchant: {b.get('merchant_name', '?')} id={b.get('merchant_id', '?')}\")
+    print(f\"Barter modifier: {b.get('barter_modifier', '?')}\")
+    print(f\"Player caps: {b.get('player_caps', 0)} | Merchant caps: {b.get('merchant_caps', 0)}\")
+    ti = b.get('trade_info', {})
+    if ti:
+        print(f\"Offer value: {ti.get('player_offer_value', 0)} | Merchant wants: {ti.get('merchant_wants', 0)}\")
+    po = b.get('player_offer', [])
+    mo = b.get('merchant_offer', [])
+    if po:
+        print('Player offer:')
+        for i in po:
+            print(f\"  {i.get('name','?')} x{i.get('quantity',1)} pid={i.get('pid')}\")
+    if mo:
+        print('Merchant offer:')
+        for i in mo:
+            print(f\"  {i.get('name','?')} x{i.get('quantity',1)} pid={i.get('pid')}\")
+"
+}
+
+barter_offer() {
+    local pid="${1:?Usage: barter_offer <pid> [qty]}"
+    local qty="${2:-1}"
+    cmd "{\"type\":\"barter_offer\",\"item_pid\":$pid,\"quantity\":$qty}"
+    sleep 0.2
+    wait_tick_advance 5 || true
+    echo "$(last_debug)"
+}
+
+barter_remove_offer() {
+    local pid="${1:?Usage: barter_remove_offer <pid> [qty]}"
+    local qty="${2:-1}"
+    cmd "{\"type\":\"barter_remove_offer\",\"item_pid\":$pid,\"quantity\":$qty}"
+    sleep 0.2
+    wait_tick_advance 5 || true
+    echo "$(last_debug)"
+}
+
+barter_request() {
+    local pid="${1:?Usage: barter_request <pid> [qty]}"
+    local qty="${2:-1}"
+    cmd "{\"type\":\"barter_request\",\"item_pid\":$pid,\"quantity\":$qty}"
+    sleep 0.2
+    wait_tick_advance 5 || true
+    echo "$(last_debug)"
+}
+
+barter_remove_request() {
+    local pid="${1:?Usage: barter_remove_request <pid> [qty]}"
+    local qty="${2:-1}"
+    cmd "{\"type\":\"barter_remove_request\",\"item_pid\":$pid,\"quantity\":$qty}"
+    sleep 0.2
+    wait_tick_advance 5 || true
+    echo "$(last_debug)"
+}
+
+barter_confirm() {
+    # Native confirm path: injects barter UI's confirm key.
+    cmd '{"type":"barter_confirm"}'
+    sleep 0.2
+    wait_tick_advance 5 || true
+    echo "$(last_debug)"
+}
+
+barter_talk() {
+    cmd '{"type":"barter_talk"}'
+    sleep 0.2
+    wait_tick_advance 5 || true
+    echo "$(last_debug)"
+}
+
+barter_cancel() {
+    cmd '{"type":"barter_cancel"}'
+    sleep 0.2
+    wait_tick_advance 5 || true
+    echo "$(last_debug)"
 }
 
 post_dialogue_hook() {

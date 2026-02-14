@@ -166,6 +166,32 @@ for k,v in d.items():
     done
 }
 
+# Configure engine auto-combat AI profile while auto_combat is enabled.
+# Usage:
+#   configure_combat_ai key value [key value ...]
+# Example:
+#   configure_combat_ai attack_who weakest distance stay_close chem_use clean
+configure_combat_ai() {
+    if [ "$#" -lt 2 ] || [ $(( $# % 2 )) -ne 0 ]; then
+        echo "Usage: configure_combat_ai key value [key value ...]"
+        echo "Keys: attack_who distance best_weapon chem_use run_away_mode area_attack_mode disposition"
+        return 1
+    fi
+
+    local payload='"type":"configure_combat_ai"'
+    while [ "$#" -gt 0 ]; do
+        local key="$1"
+        local value="$2"
+        payload="$payload,\"$key\":\"$value\""
+        shift 2
+    done
+
+    cmd "{$payload}"
+    sleep 0.2
+    wait_tick_advance 5 || true
+    echo "$(last_debug)"
+}
+
 # ─── Combat Quips ────────────────────────────────────────────────────
 
 _combat_quip_generate() {

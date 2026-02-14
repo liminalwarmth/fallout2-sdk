@@ -2654,9 +2654,6 @@ static void handleSelectDialogue(const json& cmd)
 
 void processCommands()
 {
-    // Reset query payload for each command batch so stale results don't persist.
-    gAgentQueryResult = nullptr;
-
     FILE* f = fopen(kCmdPath, "rb");
     if (f == nullptr) {
         return;
@@ -2685,6 +2682,10 @@ void processCommands()
         debugPrint("AgentBridge: missing 'commands' array\n");
         return;
     }
+
+    // Reset query payload only when a new command batch is processed.
+    // This keeps query_result readable across idle ticks after a query command.
+    gAgentQueryResult = nullptr;
 
     // Process all commands in order
     for (const auto& cmd : doc["commands"]) {
@@ -3022,43 +3023,15 @@ void processCommands()
             } else {
                 int pitems = ptbl->data.inventory.length;
                 int mitems = mtbl->data.inventory.length;
-                int pval = objectGetCost(ptbl);
-
                 if (pitems == 0 && mitems == 0) {
                     gAgentLastCommandDebug = "barter_confirm: nothing on tables";
-                } else if (pitems == 0) {
-                    gAgentLastCommandDebug = "barter_confirm: must offer something";
                 } else {
-                    // Replicate _barter_compute_value to check if trade will succeed
-                    int partyBarter = partyGetBestSkillValue(SKILL_BARTER);
-                    int npcBarter = skillGetValue(gGameDialogSpeaker, SKILL_BARTER);
-                    double perkBonus = perkHasRank(gDude, PERK_MASTER_TRADER) ? 25.0 : 0.0;
-                    int barterMod = agentGetBarterModifier();
-                    double barterModMult = (barterMod + 100.0 - perkBonus) * 0.01;
-                    if (barterModMult < 0) barterModMult = 0.0099999998;
-
-                    int merchantOfferCaps = itemGetTotalCaps(mtbl);
-                    int costWithoutCaps = objectGetCost(mtbl) - merchantOfferCaps;
-                    double balancedCost = (160.0 + npcBarter) / (160.0 + partyBarter) * (costWithoutCaps * 2.0);
-                    int merchantWants = (int)(barterModMult * balancedCost + merchantOfferCaps);
-
-                    if (pval < merchantWants) {
-                        char buf[256];
-                        snprintf(buf, sizeof(buf),
-                            "barter_confirm: rejected (offer=%d wants=%d)", pval, merchantWants);
-                        gAgentLastCommandDebug = buf;
-                    } else {
-                        // Execute trade directly: move items between tables and owners
-                        itemMoveAll(mtbl, gDude);
-                        itemMoveAll(ptbl, gGameDialogSpeaker);
-
-                        char buf[256];
-                        snprintf(buf, sizeof(buf),
-                            "barter_confirm: trade succeeded (offered=%d wanted=%d, %d+%d items)",
-                            pval, merchantWants, pitems, mitems);
-                        gAgentLastCommandDebug = buf;
-                        debugPrint("AgentBridge: %s\n", buf);
-                    }
+                    // Use the engine's native barter transaction path (same as pressing 'M').
+                    // inventory.cc handles all validation, pricing, messaging, and side effects.
+                    enqueueInputEvent('m');
+                    gAgentLastCommandDebug = "barter_confirm: attempted (injected 'm')";
+                    debugPrint("AgentBridge: barter_confirm (injected 'm', pitems=%d mitems=%d)\n",
+                        pitems, mitems);
                 }
             }
         } else if (type == "barter_talk") {
