@@ -239,6 +239,9 @@ void agentBridgeSetContext(int context)
 // Number of ticks to show dialogue highlight before injecting key
 static const unsigned int kDialogueHighlightDelay = 15; // ~0.5s at 30fps
 
+// Track context transitions to auto-hide dialogue overlay
+static const char* gPrevContext = nullptr;
+
 void agentBridgeTick()
 {
     gAgentTick++;
@@ -246,13 +249,36 @@ void agentBridgeTick()
     processPendingAttacks();
     agentProcessQueuedMovement();
 
+    // Auto-hide dialogue overlay when leaving dialogue context,
+    // or re-draw every tick to stay on top of talking head animations
+    const char* ctx = detectContext();
+    if (gPrevContext != nullptr && ctx != nullptr
+        && strcmp(gPrevContext, "gameplay_dialogue") == 0
+        && strcmp(ctx, "gameplay_dialogue") != 0) {
+        agentHideDialogueOverlay();
+    } else if (ctx != nullptr && strcmp(ctx, "gameplay_dialogue") == 0) {
+        agentRedrawDialogueOverlay();
+    }
+    gPrevContext = ctx;
+
+    // Redraw status overlay every tick to animate dots and stay on top
+    agentRedrawStatusOverlay();
+
     // Deferred dialogue select: inject key after highlight delay
+    // Re-check that we're still in dialogue before injecting, to avoid
+    // leaking numeric keys into gameplay if dialogue closed during the delay.
     if (gAgentPendingDialogueSelect >= 0
         && (gAgentTick - gAgentDialogueSelectTick) >= kDialogueHighlightDelay) {
         int index = gAgentPendingDialogueSelect;
         gAgentPendingDialogueSelect = -1;
-        enqueueInputEvent('1' + index);
-        debugPrint("AgentBridge: deferred select_dialogue index=%d injected\n", index);
+        const char* ctx = detectContext();
+        if (ctx != nullptr && strcmp(ctx, "gameplay_dialogue") == 0) {
+            enqueueInputEvent('1' + index);
+            debugPrint("AgentBridge: deferred select_dialogue index=%d injected\n", index);
+        } else {
+            debugPrint("AgentBridge: deferred select_dialogue index=%d DROPPED (context=%s)\n",
+                index, ctx ? ctx : "null");
+        }
     }
 
     writeState();
@@ -281,6 +307,9 @@ void agentBridgeExit()
     debugPrint("AgentBridge: shutting down\n");
     tickersRemove(agentBridgeTick);
 
+    agentDestroyDialogueOverlay();
+    agentHideStatusOverlay();
+
     remove(kCmdPath);
     remove(kCmdTmpPath);
     remove(kStatePath);
@@ -290,6 +319,8 @@ void agentBridgeExit()
     gStatNameToId.clear();
     gSkillNameToId.clear();
     gTraitNameToId.clear();
+
+    gPrevContext = nullptr;
 
     debugPrint("AgentBridge: shutdown complete\n");
 }

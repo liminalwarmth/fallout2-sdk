@@ -31,6 +31,10 @@ extern int gAgentPendingLoadSlot;
 // Defaults to false. Enable via {"type":"set_test_mode","enabled":true}
 extern bool gAgentTestMode;
 
+// Re-draw the dialogue thought overlay (call from dialogue render loops
+// to keep overlay on top of talking heads and window refreshes)
+void agentRedrawDialogueOverlay();
+
 } // namespace fallout
 
 #endif /* AGENT_BRIDGE_H */

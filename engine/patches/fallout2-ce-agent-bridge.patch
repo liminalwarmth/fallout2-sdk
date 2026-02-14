@@ -300,6 +300,19 @@ index 7935844..1c62a27 100644
  static inline bool isInCombat()
  {
      return (gCombatState & COMBAT_STATE_0x01) != 0;
+diff --git a/src/combat_ai.cc b/src/combat_ai.cc
+index 5d7dd0f..61fee3a 100644
+--- a/src/combat_ai.cc
++++ b/src/combat_ai.cc
+@@ -2720,7 +2720,7 @@ static int _ai_try_attack(Object* attacker, Object* defender)
+         _ai_switch_weapons(attacker, &hitMode, &weapon, defender);
+     }
+ 
+-    unsigned char rotations[800];
++    unsigned char rotations[2000];
+ 
+     Object* ammo = nullptr;
+     for (int attempt = 0; attempt < 10; attempt++) {
 diff --git a/src/display_monitor.cc b/src/display_monitor.cc
 index 977c029..2ec610b 100644
 --- a/src/display_monitor.cc
@@ -379,10 +392,28 @@ index 978a385..5758bd9 100644
      sfall_gl_scr_exit();
      sfallArraysExit();
 diff --git a/src/game_dialog.cc b/src/game_dialog.cc
-index ff98814..5b02950 100644
+index ff98814..d59c77a 100644
 --- a/src/game_dialog.cc
 +++ b/src/game_dialog.cc
-@@ -668,6 +668,50 @@ bool _gdialogActive()
+@@ -42,6 +42,17 @@
+ #include "tile.h"
+ #include "window_manager.h"
+ 
++#ifdef AGENT_BRIDGE
++#include "agent_bridge.h"
++// Wrapper: redraw dialogue thought overlay before presenting each frame,
++// so it stays on top of talking head animations and window refreshes.
++#define DIALOG_RENDER_PRESENT() do { agentRedrawDialogueOverlay(); renderPresent(); } while(0)
++#else
++#define DIALOG_RENDER_PRESENT() renderPresent()
++#endif
++// NOTE: All renderPresent() calls in this file are replaced with
++// DIALOG_RENDER_PRESENT() to keep the dialogue overlay on top.
++
+ namespace fallout {
+ 
+ #define DIALOG_REVIEW_ENTRIES_CAPACITY 80
+@@ -668,6 +679,50 @@ bool _gdialogActive()
      return _dialog_state_fix != 0;
  }
  
@@ -433,6 +464,87 @@ index ff98814..5b02950 100644
  // gdialogEnter
  // 0x444D3C
  void gameDialogEnter(Object* speaker, int a2)
+@@ -1497,7 +1552,7 @@ int gameDialogShowReview()
+             }
+         }
+ 
+-        renderPresent();
++        DIALOG_RENDER_PRESENT();
+         sharedFpsLimiter.throttle();
+     }
+ 
+@@ -2005,7 +2060,7 @@ int _gdProcess()
+             }
+         }
+ 
+-        renderPresent();
++        DIALOG_RENDER_PRESENT();
+         sharedFpsLimiter.throttle();
+     }
+ 
+@@ -2574,7 +2629,7 @@ void gameDialogWaitForFidgetToComplete()
+             gGameDialogFidgetFrmCurrentFrame++;
+         }
+ 
+-        renderPresent();
++        DIALOG_RENDER_PRESENT();
+         sharedFpsLimiter.throttle();
+     }
+ 
+@@ -2625,7 +2680,7 @@ void _gdPlayTransition(int anim)
+             frame++;
+         }
+ 
+-        renderPresent();
++        DIALOG_RENDER_PRESENT();
+         sharedFpsLimiter.throttle();
+     }
+ 
+@@ -2975,7 +3030,7 @@ void _gdialog_scroll_subwin(int windowIdx, bool scrollUp, unsigned char* windowF
+ 
+             delay_ms(33);
+ 
+-            renderPresent();
++            DIALOG_RENDER_PRESENT();
+             sharedFpsLimiter.throttle();
+         }
+     } else {
+@@ -3013,7 +3068,7 @@ void _gdialog_scroll_subwin(int windowIdx, bool scrollUp, unsigned char* windowF
+ 
+             delay_ms(33);
+ 
+-            renderPresent();
++            DIALOG_RENDER_PRESENT();
+             sharedFpsLimiter.throttle();
+         }
+     }
+@@ -3775,7 +3830,7 @@ void partyMemberControlWindowHandleEvents()
+             }
+         }
+ 
+-        renderPresent();
++        DIALOG_RENDER_PRESENT();
+         sharedFpsLimiter.throttle();
+     }
+ }
+@@ -3972,7 +4027,7 @@ void partyMemberCustomizationWindowHandleEvents()
+             }
+         }
+ 
+-        renderPresent();
++        DIALOG_RENDER_PRESENT();
+         sharedFpsLimiter.throttle();
+     }
+ }
+@@ -4234,7 +4289,7 @@ int _gdCustomSelect(int a1)
+             }
+         }
+ 
+-        renderPresent();
++        DIALOG_RENDER_PRESENT();
+         sharedFpsLimiter.throttle();
+     }
+ 
 diff --git a/src/game_dialog.h b/src/game_dialog.h
 index 0dccf6b..c38fda0 100644
 --- a/src/game_dialog.h
@@ -1060,21 +1172,78 @@ index 02bb39d..9d0a032 100644
          tileWindowRefresh();
  
 diff --git a/src/queue.cc b/src/queue.cc
-index 9056904..03ffc34 100644
+index 9056904..4d932fa 100644
 --- a/src/queue.cc
 +++ b/src/queue.cc
-@@ -486,6 +486,11 @@ static int _queue_do_explosion_(Object* explosive, bool animate)
+@@ -486,6 +486,9 @@ static int _queue_do_explosion_(Object* explosive, bool animate)
      if (actionExplode(tile, elevation, minDamage, maxDamage, gDude, animate) == -2) {
          queueAddEvent(50, explosive, nullptr, EVENT_TYPE_EXPLOSION);
      } else {
-+        // Destroy nearby scenery (doors, etc.) — matches combat explosion behavior
-+        // in _combat_explode_scenery. Without this, timed explosives only damage
-+        // critters but never destroy scenery like the Temple Impenetrable Door.
-+        _scr_explode_scenery(gDude, tile, weaponGetRocketExplosionRadius(nullptr), elevation);
-+
++        // actionExplode already calls _combat_explode_scenery (which calls
++        // _scr_explode_scenery) via animation callback (animate=true) or
++        // directly (animate=false). No extra scenery call needed here.
          _obj_destroy(explosive);
      }
  
+diff --git a/src/svga.cc b/src/svga.cc
+index 8acca96..f2e8304 100644
+--- a/src/svga.cc
++++ b/src/svga.cc
+@@ -134,6 +134,16 @@ int _GNW95_init_mode_ex(int width, int height, int bpp)
+                 }
+             }
+ 
++            // WINDOW_SCALE: percentage-based window scaling (e.g. 125 = 1.25x)
++            // Keeps game resolution unchanged, just makes the window bigger.
++            // Overrides SCALE_2X if set.
++            int windowScalePct;
++            if (configGetInt(&resolutionConfig, "MAIN", "WINDOW_SCALE", &windowScalePct)) {
++                if (windowScalePct >= 100 && windowScalePct <= 400) {
++                    scale = -windowScalePct; // negative = percentage mode
++                }
++            }
++
+             configGetBool(&resolutionConfig, "IFACE", "IFACE_BAR_MODE", &gInterfaceBarMode);
+             configGetInt(&resolutionConfig, "IFACE", "IFACE_BAR_WIDTH", &gInterfaceBarWidth);
+             configGetInt(&resolutionConfig, "IFACE", "IFACE_BAR_SIDE_ART", &gInterfaceSidePanelsImageId);
+@@ -181,7 +191,36 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
+             windowFlags |= SDL_WINDOW_FULLSCREEN;
+         }
+ 
+-        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * scale, height * scale, windowFlags);
++        // Read optional window position from f2_res.ini
++        int windowX = SDL_WINDOWPOS_UNDEFINED;
++        int windowY = SDL_WINDOWPOS_UNDEFINED;
++        {
++            Config posConfig;
++            if (configInit(&posConfig)) {
++                if (configRead(&posConfig, "f2_res.ini", false)) {
++                    int posVal;
++                    if (configGetInt(&posConfig, "MAIN", "WINDOW_X", &posVal)) {
++                        windowX = posVal;
++                    }
++                    if (configGetInt(&posConfig, "MAIN", "WINDOW_Y", &posVal)) {
++                        windowY = posVal;
++                    }
++                }
++                configFree(&posConfig);
++            }
++        }
++
++        int windowWidth, windowHeight;
++        if (scale < 0) {
++            // Negative scale = percentage mode (e.g. -125 = 125%)
++            int pct = -scale;
++            windowWidth = width * pct / 100;
++            windowHeight = height * pct / 100;
++        } else {
++            windowWidth = width * scale;
++            windowHeight = height * scale;
++        }
++        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, windowX, windowY, windowWidth, windowHeight, windowFlags);
+         if (gSdlWindow == nullptr) {
+             return -1;
+         }
 diff --git a/src/text_object.cc b/src/text_object.cc
 index 5bc000a..dcb2ff1 100644
 --- a/src/text_object.cc
@@ -1113,6 +1282,64 @@ index 5bc000a..dcb2ff1 100644
          unsigned int delay = gTextObjectsLineDelay * textObject->linesCount + gTextObjectsBaseDelay;
          if ((textObject->flags & TEXT_OBJECT_MARKED_FOR_REMOVAL) != 0 || (getTicksBetween(_get_bk_time(), textObject->time) > delay)) {
              tileToScreenXY(textObject->tile, &(textObject->x), &(textObject->y), gElevation);
+diff --git a/src/window_manager.cc b/src/window_manager.cc
+index 9381222..cf1de46 100644
+--- a/src/window_manager.cc
++++ b/src/window_manager.cc
+@@ -27,7 +27,7 @@ namespace fallout {
+ #define BUTTON_GROUP_LIST_CAPACITY (64)
+ 
+ static void windowFree(int win);
+-static void _win_buffering(bool a1);
++// _win_buffering declared in window_manager.h
+ static void _win_move(int win_index, int x, int y);
+ static void _win_clip(Window* window, RectListNode** rect, unsigned char* a3);
+ static void win_drag(int win);
+@@ -1105,6 +1105,31 @@ void _refresh_all(Rect* rect, unsigned char* a2)
+     }
+ }
+ 
++// Composite all visible windows at the given rect into a caller-provided buffer.
++// Buffer must be (rect width * rect height) bytes. Uses the a3 path of
++// _GNW_win_refresh which blits opaquely into the buffer (no _scr_blit).
++void windowCompositeToBuffer(Rect* rect, unsigned char* buffer)
++{
++    if (!gWindowSystemInitialized || buffer == nullptr || rect == nullptr)
++        return;
++
++    int width = rect->right - rect->left + 1;
++    int height = rect->bottom - rect->top + 1;
++    if (width <= 0 || height <= 0)
++        return;
++
++    // Fill with background color first
++    bufferFill(buffer, width, height, width, _bk_color);
++
++    _doing_refresh_all = 1;
++
++    for (int index = 0; index < gWindowsLength; index++) {
++        _GNW_win_refresh(gWindows[index], rect, buffer);
++    }
++
++    _doing_refresh_all = 0;
++}
++
+ // 0x4D7888
+ Window* windowGetWindow(int win)
+ {
+diff --git a/src/window_manager.h b/src/window_manager.h
+index 2f76563..3470941 100644
+--- a/src/window_manager.h
++++ b/src/window_manager.h
+@@ -197,6 +197,8 @@ int buttonDisable(int btn);
+ int _win_set_button_rest_state(int btn, bool checked, int flags);
+ int _win_group_radio_buttons(int buttonCount, int* btns);
+ int _win_button_press_and_release(int btn);
++void _win_buffering(bool buffering);
++void windowCompositeToBuffer(Rect* rect, unsigned char* buffer);
+ 
+ } // namespace fallout
+ 
 diff --git a/src/worldmap.cc b/src/worldmap.cc
 index 2929cc0..49e8304 100644
 --- a/src/worldmap.cc

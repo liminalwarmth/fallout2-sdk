@@ -88,6 +88,16 @@ int getPendingAttackCount();
 void agentProcessQueuedMovement();
 int agentGetMovementWaypointsRemaining();
 
+// --- Dialogue thought overlay ---
+// agentRedrawDialogueOverlay() is declared in agent_bridge.h (public API for engine hooks)
+
+void agentHideDialogueOverlay();
+void agentDestroyDialogueOverlay();
+
+// --- Status overlay (compaction indicator, top-left corner) ---
+void agentRedrawStatusOverlay();
+void agentHideStatusOverlay();
+
 } // namespace fallout
 
 #endif /* AGENT_BRIDGE_INTERNAL_H */

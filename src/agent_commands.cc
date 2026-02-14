@@ -35,6 +35,7 @@
 #include "perk.h"
 #include "proto.h"
 #include "proto_instance.h"
+#include "text_font.h"
 #include "text_object.h"
 #include "tile.h"
 #include "color.h"
@@ -42,6 +43,10 @@
 #include "random.h"
 #include "scripts.h"
 #include "pipboy.h"
+#include "window_manager.h"
+#include "word_wrap.h"
+#include "draw.h"
+#include "svga.h"
 #include "worldmap.h"
 
 namespace fallout {
@@ -49,6 +54,320 @@ namespace fallout {
 std::string gAgentLastCommandDebug;
 std::string gAgentLookAtResult;
 std::map<std::string, int> gCommandFailureCounts;
+
+// --- Dialogue thought overlay (direct screen blit, no window) ---
+// Bottom edge flush with the NPC reply window top (Y=225 in game_dialog.cc)
+static bool gAgentDialogueOverlayActive = false;
+static const int kOverlayX = 80;
+static const int kOverlayY = 0;
+static const int kOverlayW = 480;
+static const int kOverlayH = 240;
+static const int kOverlayPadding = 10;
+
+// Cached text buffer for persistent re-drawing (survives talking head refreshes)
+static unsigned char* gOverlayCachedTextBuf = nullptr;
+static int gOverlayCachedTextBufW = 0;
+static int gOverlayCachedTextBufH = 0;
+static int gOverlayCachedDestX = 0;
+static int gOverlayCachedDestY = 0;
+
+static void renderDialogueOverlay(const char* text)
+{
+    size_t textLen = strlen(text);
+    if (textLen == 0)
+        return;
+
+    // Truncate very long text to prevent oversized breakpoints array
+    char truncBuf[512];
+    if (textLen > 500) {
+        memcpy(truncBuf, text, 497);
+        memcpy(truncBuf + 497, "...", 4);
+        text = truncBuf;
+        textLen = 500;
+    }
+
+    // Use font 101 (same as dialogue text and floating text objects)
+    int oldFont = fontGetCurrent();
+    fontSetCurrent(101);
+
+    int textAreaW = kOverlayW - kOverlayPadding * 2;
+    int lineHeight = fontGetLineHeight() + 1;
+
+    // Word wrap
+    short breakpoints[128];
+    short lineCount = 0;
+    if (wordWrap(text, textAreaW, breakpoints, &lineCount) != 0) {
+        fontSetCurrent(oldFont);
+        return;
+    }
+
+    // Cap lines to fit in overlay
+    int maxLines = (kOverlayH - 4) / lineHeight;
+    if (maxLines < 1)
+        maxLines = 1;
+    // If too many lines, show the LAST maxLines (most recent text at bottom)
+    int firstLine = 0;
+    if (lineCount > maxLines) {
+        firstLine = lineCount - maxLines;
+        lineCount = maxLines;
+    }
+    if (lineCount < 1) {
+        fontSetCurrent(oldFont);
+        return;
+    }
+
+    int totalTextHeight = lineCount * lineHeight;
+
+    // Render text lines into a temp buffer with 2px padding for outline
+    // (palette 0 = transparent for blitBufferToBufferTrans)
+    int textBufW = textAreaW + 4; // 2px padding each side
+    int textBufH = totalTextHeight + 4;
+    if (textBufH < 4) {
+        fontSetCurrent(oldFont);
+        return;
+    }
+    unsigned char* textBuf = (unsigned char*)calloc(textBufW * textBufH, 1);
+    if (textBuf == nullptr) {
+        fontSetCurrent(oldFont);
+        return;
+    }
+
+    int orangeColor = _colorTable[32322]; // bright orange RGB(248,144,16)
+
+    for (int i = 0; i < lineCount; i++) {
+        int srcLine = firstLine + i;
+        int start = breakpoints[srcLine];
+        int end = (srcLine + 1 < firstLine + lineCount) ? breakpoints[srcLine + 1] : (int)textLen;
+
+        while (end > start && (text[end - 1] == ' ' || text[end - 1] == '\n'))
+            end--;
+        if (end <= start)
+            continue;
+
+        char lineBuf[256];
+        int len = end - start;
+        if (len > 255)
+            len = 255;
+        memcpy(lineBuf, text + start, len);
+        lineBuf[len] = '\0';
+
+        int lineW = fontGetStringWidth(lineBuf);
+        int lineX = (textBufW - lineW) / 2;
+        if (lineX < 2)
+            lineX = 2;
+        int lineY = 2 + i * lineHeight; // offset by 2 for top padding
+
+        int renderW = textBufW - lineX;
+        if (renderW < 1)
+            continue;
+
+        fontDrawText(textBuf + lineY * textBufW + lineX, lineBuf, renderW, textBufW, orangeColor);
+    }
+
+    // Near-black outline: _colorTable[2114] = RGB(2,2,2) in 5-bit space
+    // NOT palette 0, so blitBufferToBufferTrans won't skip it
+    bufferOutline(textBuf, textBufW, textBufH, textBufW, _colorTable[2114]);
+
+    // Composite all underlying windows into a scene buffer
+    Rect overlayRect;
+    overlayRect.left = kOverlayX;
+    overlayRect.top = kOverlayY;
+    overlayRect.right = kOverlayX + kOverlayW - 1;
+    overlayRect.bottom = kOverlayY + kOverlayH - 1;
+
+    unsigned char* sceneBuf = (unsigned char*)calloc(kOverlayW * kOverlayH, 1);
+    if (sceneBuf == nullptr) {
+        free(textBuf);
+        fontSetCurrent(oldFont);
+        return;
+    }
+
+    windowCompositeToBuffer(&overlayRect, sceneBuf);
+
+    // Bottom-align text onto scene buffer using transparent blit
+    // Center the text buffer horizontally, align to bottom
+    int destX = (kOverlayW - textBufW) / 2;
+    if (destX < 0)
+        destX = 0;
+    int destY = kOverlayH - textBufH;
+    if (destY < 0)
+        destY = 0;
+
+    int blitW = textBufW;
+    int blitH = textBufH;
+    if (destX + blitW > kOverlayW)
+        blitW = kOverlayW - destX;
+    if (destY + blitH > kOverlayH)
+        blitH = kOverlayH - destY;
+
+    blitBufferToBufferTrans(textBuf, blitW, blitH, textBufW,
+        sceneBuf + destY * kOverlayW + destX, kOverlayW);
+
+    // Blit composited result directly to screen
+    _scr_blit(sceneBuf, kOverlayW, kOverlayH, 0, 0,
+        kOverlayW, kOverlayH, kOverlayX, kOverlayY);
+
+    // Cache the text buffer for persistent re-drawing (talking heads overwrite us)
+    if (gOverlayCachedTextBuf != nullptr)
+        free(gOverlayCachedTextBuf);
+    gOverlayCachedTextBuf = textBuf; // transfer ownership
+    gOverlayCachedTextBufW = textBufW;
+    gOverlayCachedTextBufH = textBufH;
+    gOverlayCachedDestX = destX;
+    gOverlayCachedDestY = destY;
+
+    free(sceneBuf);
+
+    fontSetCurrent(oldFont);
+    gAgentDialogueOverlayActive = true;
+}
+
+void agentHideDialogueOverlay()
+{
+    if (gAgentDialogueOverlayActive) {
+        gAgentDialogueOverlayActive = false;
+        // Refresh the overlay area to restore underlying scene
+        Rect overlayRect;
+        overlayRect.left = kOverlayX;
+        overlayRect.top = kOverlayY;
+        overlayRect.right = kOverlayX + kOverlayW - 1;
+        overlayRect.bottom = kOverlayY + kOverlayH - 1;
+        windowRefreshAll(&overlayRect);
+    }
+    // Free cached text buffer
+    if (gOverlayCachedTextBuf != nullptr) {
+        free(gOverlayCachedTextBuf);
+        gOverlayCachedTextBuf = nullptr;
+    }
+}
+
+void agentDestroyDialogueOverlay()
+{
+    agentHideDialogueOverlay();
+}
+
+void agentRedrawDialogueOverlay()
+{
+    if (!gAgentDialogueOverlayActive || gOverlayCachedTextBuf == nullptr)
+        return;
+
+    // Re-composite scene + cached text + blit to screen
+    Rect overlayRect;
+    overlayRect.left = kOverlayX;
+    overlayRect.top = kOverlayY;
+    overlayRect.right = kOverlayX + kOverlayW - 1;
+    overlayRect.bottom = kOverlayY + kOverlayH - 1;
+
+    unsigned char* sceneBuf = (unsigned char*)calloc(kOverlayW * kOverlayH, 1);
+    if (sceneBuf == nullptr)
+        return;
+
+    windowCompositeToBuffer(&overlayRect, sceneBuf);
+
+    int blitW = gOverlayCachedTextBufW;
+    int blitH = gOverlayCachedTextBufH;
+    int destX = gOverlayCachedDestX;
+    int destY = gOverlayCachedDestY;
+
+    if (destX + blitW > kOverlayW)
+        blitW = kOverlayW - destX;
+    if (destY + blitH > kOverlayH)
+        blitH = kOverlayH - destY;
+
+    blitBufferToBufferTrans(gOverlayCachedTextBuf, blitW, blitH, gOverlayCachedTextBufW,
+        sceneBuf + destY * kOverlayW + destX, kOverlayW);
+
+    _scr_blit(sceneBuf, kOverlayW, kOverlayH, 0, 0,
+        kOverlayW, kOverlayH, kOverlayX, kOverlayY);
+
+    free(sceneBuf);
+}
+
+// --- Status overlay (top-left corner, shown during compaction/long pauses) ---
+static bool gAgentStatusOverlayActive = false;
+static std::string gAgentStatusText;
+static unsigned int gAgentStatusStartTick = 0;
+
+static const int kStatusX = 16;
+static const int kStatusY = 8;
+static const int kStatusW = 260;
+static const int kStatusH = 24;
+
+static void renderStatusOverlay()
+{
+    int dotCount = ((gAgentTick - gAgentStatusStartTick) / 20) % 3 + 1;
+    std::string displayText = gAgentStatusText + std::string(dotCount, '.');
+
+    int oldFont = fontGetCurrent();
+    fontSetCurrent(101);
+
+    unsigned char* textBuf = (unsigned char*)calloc(kStatusW * kStatusH, 1);
+    if (textBuf == nullptr) {
+        fontSetCurrent(oldFont);
+        return;
+    }
+
+    fontDrawText(textBuf + 4 * kStatusW + 4, displayText.c_str(), kStatusW, kStatusW, _colorTable[32322]);
+    bufferOutline(textBuf, kStatusW, kStatusH, kStatusW, _colorTable[2114]);
+
+    Rect statusRect;
+    statusRect.left = kStatusX;
+    statusRect.top = kStatusY;
+    statusRect.right = kStatusX + kStatusW - 1;
+    statusRect.bottom = kStatusY + kStatusH - 1;
+
+    unsigned char* sceneBuf = (unsigned char*)calloc(kStatusW * kStatusH, 1);
+    if (sceneBuf == nullptr) {
+        free(textBuf);
+        fontSetCurrent(oldFont);
+        return;
+    }
+
+    windowCompositeToBuffer(&statusRect, sceneBuf);
+    blitBufferToBufferTrans(textBuf, kStatusW, kStatusH, kStatusW, sceneBuf, kStatusW);
+
+    _scr_blit(sceneBuf, kStatusW, kStatusH, 0, 0, kStatusW, kStatusH, kStatusX, kStatusY);
+
+    free(sceneBuf);
+    free(textBuf);
+    fontSetCurrent(oldFont);
+}
+
+void agentShowStatusOverlay(const char* text)
+{
+    gAgentStatusText = text != nullptr ? text : "";
+    gAgentStatusOverlayActive = true;
+    gAgentStatusStartTick = gAgentTick;
+    renderStatusOverlay();
+}
+
+void agentHideStatusOverlay()
+{
+    if (gAgentStatusOverlayActive) {
+        gAgentStatusOverlayActive = false;
+        gAgentStatusText.clear();
+
+        Rect statusRect;
+        statusRect.left = kStatusX;
+        statusRect.top = kStatusY;
+        statusRect.right = kStatusX + kStatusW - 1;
+        statusRect.bottom = kStatusY + kStatusH - 1;
+        windowRefreshAll(&statusRect);
+    }
+}
+
+void agentRedrawStatusOverlay()
+{
+    if (!gAgentStatusOverlayActive)
+        return;
+
+    if ((gAgentTick - gAgentStatusStartTick) > 1800) {
+        agentHideStatusOverlay();
+        return;
+    }
+
+    renderStatusOverlay();
+}
 
 // Safe wrapper for objectGetName — never returns nullptr
 static const char* safeName(Object* obj)
@@ -825,6 +1144,7 @@ static void handleEquipItem(const json& cmd)
         if (oldItem != nullptr) {
             oldItem->flags &= ~OBJECT_IN_ANY_HAND;
         }
+        item->flags &= ~OBJECT_IN_ANY_HAND;
         if (hand == HAND_RIGHT) {
             item->flags |= OBJECT_IN_RIGHT_HAND;
         } else {
@@ -873,7 +1193,7 @@ static void handleUseItem(const json& cmd)
 
     int type = itemGetType(item);
     if (type == ITEM_TYPE_DRUG) {
-        if (_item_d_take_drug(gDude, item)) {
+        if (_item_d_take_drug(gDude, item) == 1) {
             // Remove the consumed drug from inventory and destroy it,
             // matching the engine's inventory screen behavior.
             itemRemove(gDude, item, 1);
@@ -1334,7 +1654,7 @@ static void handleUseCombatItem(const json& cmd)
 
     int type = itemGetType(item);
     if (type == ITEM_TYPE_DRUG) {
-        if (_item_d_take_drug(gDude, item)) {
+        if (_item_d_take_drug(gDude, item) == 1) {
             itemRemove(gDude, item, 1);
             _obj_connect(item, gDude->tile, gDude->elevation, nullptr);
             _obj_destroy(item);
@@ -2202,6 +2522,10 @@ void processCommands()
             continue;
 
         std::string type = cmd["type"].get<std::string>();
+        // Auto-clear status overlay on any real command (not set_status/clear_status)
+        if (gAgentStatusOverlayActive && type != "set_status" && type != "clear_status") {
+            agentHideStatusOverlay();
+        }
 
         // Skip command — works during movies by injecting an input event
         if (type == "skip") {
@@ -2391,7 +2715,7 @@ void processCommands()
                     int oldTile = gDude->tile;
                     objectSetLocation(gDude, tile, gDude->elevation, &rect);
                     tileSetCenter(tile, TILE_SET_CENTER_REFRESH_WINDOW);
-                    if (isInCombat()) {
+                    if (isInCombat() && gDude->data.critter.combat.ap > 0) {
                         gDude->data.critter.combat.ap -= 1;
                     }
                     gAgentLastCommandDebug = "nudge: " + std::to_string(oldTile) + " -> " + std::to_string(tile);
@@ -2655,25 +2979,44 @@ void processCommands()
                 debugPrint("AgentBridge: input_event code=%d\n", keyCode);
             }
         }
-        // Float thought text above player's head
+        // Float thought text above player's head (or overlay window during dialogue)
         else if (type == "float_thought") {
             if (cmd.contains("text") && cmd["text"].is_string()) {
                 std::string text = cmd["text"].get<std::string>();
                 if (!text.empty() && gDude != nullptr) {
-                    // Claude orange text (#DA7756), black outline — distinct from yellow NPC speech
-                    Rect rect;
-                    char* buf = strdup(text.c_str());
-                    if (textObjectAdd(gDude, buf, 101, _colorTable[28106], _colorTable[0], &rect) == 0) {
-                        tileWindowRefreshRect(&rect, gElevation);
+                    const char* ctx = detectContext();
+                    if (ctx != nullptr && strcmp(ctx, "gameplay_dialogue") == 0) {
+                        // During dialogue, render to overlay window on top of dialogue UI
+                        renderDialogueOverlay(text.c_str());
+                        gAgentLastCommandDebug = "float_thought(overlay): " + text.substr(0, 40);
+                    } else {
+                        // Normal gameplay: tile-based text object above player
+                        agentHideDialogueOverlay();
+                        Rect rect;
+                        char* buf = strdup(text.c_str());
+                        if (textObjectAdd(gDude, buf, 101, _colorTable[28106], _colorTable[0], &rect) == 0) {
+                            tileWindowRefreshRect(&rect, gElevation);
+                        }
+                        free(buf);
+                        gAgentLastCommandDebug = "float_thought: " + text.substr(0, 40);
                     }
-                    free(buf);
-                    gAgentLastCommandDebug = "float_thought: " + text.substr(0, 40);
                 } else {
                     gAgentLastCommandDebug = "float_thought: empty text or no player";
                 }
             } else {
                 gAgentLastCommandDebug = "float_thought: missing text field";
             }
+        }
+        else if (type == "set_status") {
+            std::string text = cmd.value("text", "");
+            if (!text.empty()) {
+                agentShowStatusOverlay(text.c_str());
+                gAgentLastCommandDebug = "set_status: " + text;
+            }
+        }
+        else if (type == "clear_status") {
+            agentHideStatusOverlay();
+            gAgentLastCommandDebug = "clear_status";
         }
         // Test mode toggle
         else if (type == "set_test_mode") {

@@ -25,17 +25,6 @@ A lovable rogue with main-character energy and just enough conscience to keep th
 - **Loyalty is real, but earned fast.** Be decent, be funny, or be useful—two out of three gets you on the list.
 - **Survive with style.** If I’m going to suffer, I’m at least going to be entertaining about it.
 
-## Combat Approach
-
-Combat is a tool, not a hobby—but also, sometimes it’s extremely funny.
-
-- **Start with words, end with bullets.** Ideally the bullets are fired by someone else.
-- **Dirty fighting is just “efficient.”** Pocket sand energy, always.
-- **Prioritize spectacle:** embarrass dangerous people publicly; fear spreads faster than blood.
-- **Tactical cowardice:** if the odds look bad, vanish. Reappear later with better gear and a worse attitude.
-- **Collateral awareness:** won’t harm innocents for convenience—partly morals, partly because it kills the vibe.
-- **Signature move:** talk like a harmless clown until you’re behind cover with a loaded gun and a plan you made up 0.7 seconds ago.
-
 ## Social Approach
 
 Social play is the main build. Guns are just a backup argument.
@@ -47,31 +36,16 @@ Social play is the main build. Guns are just a backup argument.
 - **Make friends aggressively:** ally with weirdos, outcasts, and anyone with a unique perk or interesting dialogue.
 - **Always have an exit line:** if things go south, the last thing they hear is a one-liner and a door shutting.
 
-## Quest Approach
-
-The GECK is the spine of the story; everything else is seasoning, and this character loves seasoning.
-
-- **Main quest momentum:** check in on the GECK path regularly so the run doesn’t become “Side Quest 2: The Sidequestening.”
-- **Detours for high entertainment value:** bizarre towns, morally spicy dilemmas, scams, rivalries, anything with a twist.
-- **Factions are content farms:** infiltrate, extract value, leave before commitment becomes inconvenient.
-- **Moral compass with a smirk:** helps people when it feels meaningful, but will absolutely mock them while doing it.
-- **“Make it worse (for bad people)” policy:** if someone’s cruel, the response is disproportionate humiliation.
-
 ## Character Build Preferences
 
-Built for “talk my way in, steal the thing, talk my way out, shoot only if the punchline requires it.”
-
-- **Core stats:** High **Charisma** (yes, even if it’s “not optimal”), high **Agility**, solid **Intelligence**.
-  - The vibe is “walk into a room and immediately become the most dangerous object in it.”
+- **Core stats:** High **Agility**, solid **Intelligence**. Also Perception.
 
 - **Key skills:**
   - **Speech:** the real endgame.
-  - **Steal:** because _obviously._
   - **Lockpick:** doors are a social construct.
   - **Small Guns:** reliable, practical, and doesn’t interrupt the monologue.
 
 - **Support skills:** **Sneak**, **Science**, **Repair** (for heists, hacks, and making stolen junk work).
-- **Avoid:** hyper-specializing into “honorable melee warrior.” This character is here to win, not to prove something.
 
 ## Attitudes
 
@@ -81,17 +55,3 @@ Built for “talk my way in, steal the thing, talk my way out, shoot only if the
 - **Marks** (to be hustled)
 - **Monsters** (to be ended, preferably humiliatingly)
 - **Complicated Weirdos** (automatic interest)
-
-## Evolution Log
-
-(Entries added when the wasteland “wins” a little and the character adapts.)
-
-- When betrayed: becomes more theatrical about trust, but secretly more careful.
-- When someone innocent pays the price: the jokes get sharper and the mercy gets rarer—for villains only.
-- When they gain power: tries not to turn into the thing they mock… tries.
-
-## Recurring Bits:
-
-- calling every faction “a subscription service I did not sign up for”
-- naming weapons like they’re band members
-- treating bartering like courtroom cross-examination

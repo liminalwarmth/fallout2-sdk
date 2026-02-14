@@ -1,255 +1,228 @@
-# Fallout 2 — Gameplay Mechanics Guide
+# Fallout 2 — Interaction Cheat Sheet (Spoiler-Light)
 
-A general reference for how Fallout 2 works. This covers game mechanics, not specific solutions. Think of it as the user manual the agent should internalize before playing.
-
----
-
-## Character System
-
-### SPECIAL Stats (1–10 each)
-- **Strength**: Carry weight, melee damage, weapon requirements
-- **Perception**: Ranged accuracy, sequence (turn order), detecting traps
-- **Endurance**: Hit points per level, poison/radiation resistance, healing rate
-- **Charisma**: NPC reactions, party size limit (CHA/2), barter modifier
-- **Intelligence**: Skill points per level (2×INT + 5), dialogue options (low INT = different dialogue)
-- **Agility**: Action points (5 + AG/2), armor class
-- **Luck**: Critical hit chance, random encounter quality, gambling
-
-### Derived Stats
-- **Hit Points**: 15 + STR + (2 × END) + (END/3 × level)
-- **Action Points**: 5 + AG/2 (floored). Everything in combat costs AP.
-- **Carry Weight**: 25 + 25 × STR pounds
-- **Sequence**: 2 × PE. Determines turn order in combat.
-- **Healing Rate**: END/3 (min 1). HP recovered per rest period.
-- **Armor Class**: Base AG. Modified by armor worn.
-- **Damage Resistance**: From armor. Separate for Normal, Laser, Fire, Plasma, Explode.
-
-### Skills (0–300%)
-Skills start at base values derived from SPECIAL and increase with skill points at level-up. Higher skill = higher success chance. Key skills:
-- **Small/Big Guns, Energy Weapons**: Combat accuracy with weapon types
-- **Unarmed/Melee**: Close combat accuracy
-- **Lockpick**: Open locked doors and containers
-- **Steal**: Take items from NPCs without detection
-- **Traps**: Detect and disarm traps, arm explosives
-- **Science**: Use computers, interact with tech
-- **Repair**: Fix broken machinery
-- **Speech**: Persuade NPCs, unlock dialogue options
-- **Barter**: Better buy/sell prices
-- **First Aid**: Heal minor injuries (1/day, 1-3 AP)
-- **Doctor**: Heal crippled limbs and major injuries (1/day)
-- **Outdoorsman**: Avoid random encounters, forage, better world map travel
-- **Sneak**: Move undetected
-
-**Tagged Skills**: At character creation, choose 3 skills to "tag" — they start higher and gain 2 points per point spent.
-
-### Traits (pick 0-2 at creation)
-Traits give one benefit and one penalty. They're permanent. Examples:
-- **Heavy Handed**: +4 melee damage, -30% critical hit table results
-- **Fast Shot**: 1 less AP per ranged attack, but no aimed shots
-- **Gifted**: +1 to all SPECIAL, but -10% to all skills and 5 fewer skill points/level
-- **Small Frame**: +1 AG, but 25% less carry weight
-- **Finesse**: +10% critical chance, but -30% damage
-
-### Perks (every 3 levels starting at level 3)
-Perks provide bonuses. Each has SPECIAL/level/skill requirements. Some highlights:
-- **Awareness**: See exact HP/weapon of target when examining
-- **Bonus Move**: +2 movement AP in combat (free move)
-- **Quick Pockets**: Inventory access costs 2 AP instead of 4
-- **Bonus Rate of Fire**: -1 AP for ranged attacks
-- **Toughness**: +10% damage resistance
-- **Better Criticals**: +20% to critical hit effects
-
-### Leveling
-- Gain XP from quests, combat kills, skill usage, and quest completion
-- Each level: gain HP, skill points, and a perk every 3 levels
-- XP thresholds increase per level (1000, 3000, 6000, 10000, 15000, ...)
+Use this as a practical reference for what you can actually do in the world:
+- how to use items on people/objects,
+- how to remove obstacles,
+- what each skill is useful for.
 
 ---
 
-## Combat
+## Core Interaction Model
 
-### Action Points
-Everything costs AP. When you're out of AP, your turn ends (or you manually end it to let AP regenerate faster for armor class).
-- **Move**: 1 AP per hex
-- **Unarmed/Melee attack**: 3 AP (varies by weapon)
-- **Ranged attack**: 5 AP (varies; aimed shots cost +1)
-- **Reload**: 2 AP
-- **Use item**: 2 AP (stimpak, etc.)
-- **Free move**: Some bonus AP can only be used for movement, not attacks
+- **Right-click** changes cursor/action mode (move/use/look behavior).
+- **Left-click self** opens inventory.
+- **Two hand slots** let you keep two ready items (for example gun + grenade, or gun + dynamite).
+- **Skilldex** applies a chosen skill directly to a target.
+- **Pip-Boy** handles quests, map, and resting.
 
-### Attack Modes
-Weapons have multiple attack modes. Cycle through them to access:
-- **Unarmed**: Punch, Kick (Kick does more damage, costs more AP)
-- **Melee**: Swing, Thrust (varies by weapon)
-- **Ranged**: Single shot, Burst fire, Aimed shot
-- Aimed shots target specific body parts: Head (hardest, most damage), Eyes (blinding), Torso (easiest), Arms (disarm), Legs (cripple), Groin
-
-### Hit Chance
-`Base = skill% - distance_penalty - target_AC - cover + modifiers`
-- Distance reduces accuracy for ranged weapons
-- Aimed shots have an additional penalty (-40% for head, -60% for eyes, etc.)
-- Light conditions matter (darkness = penalty)
-- Minimum 1% hit chance in most cases
-
-### Damage
-`Damage = (weapon_damage_roll - target_DT) × (1 - target_DR%)`
-- **DT** (Damage Threshold): Flat damage absorbed. If your damage is below DT, you do nothing.
-- **DR** (Damage Resistance): Percentage reduction after DT.
-- Different armor has different DT/DR for each damage type (Normal, Laser, Fire, Plasma, Explode)
-- Critical hits multiply damage and can cause special effects (knockout, crippled limb, bypass armor, instant death)
-
-### Damage Types
-- **Normal**: Most bullets, melee, unarmed
-- **Laser**: Laser pistol/rifle
-- **Fire**: Flamer, Molotov cocktails
-- **Plasma**: Plasma pistol/rifle
-- **Explosive**: Grenades, rockets, dynamite, plastic explosives
-- **EMP**: Effective vs robots, useless vs organic
-
-### Combat Strategy
-- Close distance before attacking with melee/unarmed
-- Use cover and doorways as chokepoints
-- Heal when HP drops below ~40%
-- End turn early if you can't reach or hurt enemies — remaining AP adds to AC
-- Use aimed shots to the eyes to blind dangerous enemies
-- Use burst fire against groups (careful: hits friendlies too!)
-- Switch to the correct hand that has your weapon equipped
-
-### Combat Initiation
-- Walking into hostile creatures triggers combat
-- `enter_combat` command to initiate from exploration
-- Some dialogues end in combat
-- Running away: `flee_combat` if near a map edge
+How to use an item on a target:
+1. Open inventory.
+2. Select item.
+3. Choose use hand icon.
+4. Click target (self, companion, NPC, door, machine, container, etc.).
 
 ---
 
-## Exploration
+## Item Interactions That Matter
 
-### General Strategy
-1. **Check every container**: Pots, chests, shelves, desks, lockers, bookshelves — all may hold items
-2. **Examine unusual objects**: Use `look_at` on anything interesting. Signs, notes, and books provide clues.
-3. **Talk to everyone**: NPCs give quests, hints, and background. Exhaust dialogue trees.
-4. **Try skills on interactive objects**: Lockpick on locked doors/containers, Repair on broken machinery, Science on computers, Traps on trapped containers
-5. **Pick up loose items**: Ground items are free loot. Look for ammo, healing items, quest items.
-6. **Map multiple elevations**: Many maps have 2-3 floors/levels. Look for stairs, ladders, elevators.
+### Healing and medical items
 
-### Doors
-- **Try opening first** (use_object). Many doors are unlocked.
-- **Locked doors**: Use Lockpick skill. Higher skill = better chance. Some locks are too hard for low skill.
-- **Reinforced/Impenetrable doors**: Can't be lockpicked. Require explosives (arm near door, move away, wait for detonation) or a key found elsewhere.
-- **Trapped doors**: Traps skill to detect/disarm before opening. Failed disarm may trigger the trap.
-- **Doors auto-close**: After opening, move through promptly before it closes.
-- **Some doors require keys**: Keys are quest items found in the world or given by NPCs.
+| Item | What it does | Can target companions? | Notes |
+|---|---|---|---|
+| Stimpak | Immediate HP heal | Yes | Bread-and-butter heal in and out of combat |
+| Super Stimpak | Big heal + delayed damage | Yes | Powerful but delayed damage can be dangerous |
+| Healing Powder | Small heal, Perception penalty | Yes | Common early-game fallback |
+| First Aid Kit | Boosts First Aid usage | Yes | Helps with HP recovery checks |
+| Doctor's Bag | Boosts Doctor usage (cripples + HP) | Yes | Key field tool for broken limbs |
+| Antidote | Reduces/cures poison | Yes | Use when poisoned |
+| RadAway | Reduces radiation level | Yes | After radiation exposure |
+| Rad-X | Temporarily increases rad resistance | Yes | Use before entering irradiated areas |
 
-### Explosives
-Explosives require a multi-step process — they can't just be "used on" a target:
-1. **Arm the explosive** (sets a timer, places it on the ground)
-2. **Move away** from the blast radius (at least 5-8 hexes)
-3. **Wait for detonation** (timer expires, explosion occurs)
-4. **Check results** (target destroyed? path clear?)
+Important companion interaction:
+- **You can use Stimpaks on companions directly.**
+- **You can use Doctor's Bag on companions** (with Doctor skill) to treat crippled limbs.
 
-Types: Dynamite (weaker, found more often) and Plastic Explosives (stronger). Both work on destructible scenery.
+### Utility / obstacle items
 
-### Containers
-- Containers include: Pots, Chests, Lockers, Shelves, Desks, Bookshelves, Footlockers, Dressers, Tables
-- Some are locked (use Lockpick) or trapped (use Traps)
-- Container state persists — looted containers stay empty
-- Dead bodies are also containers — loot after combat
+| Item | Typical use |
+|---|---|
+| Lockpicks / Electronic Lockpicks | Improves lock-opening attempts on doors/containers |
+| Tool Kit / Super Tool Kit | Improves Repair interactions with machinery/systems |
+| Crowbar | Opens/forces some specific containers/obstacles |
+| Dynamite / Plastic Explosives | Destroy some doors/obstacles or trap/kill targets |
+| Grenades (frag/plasma/pulse/molotov) | Thrown explosive weapon |
 
----
-
-## Skills in the Field
-
-| Skill | Use On | Effect |
-|-------|--------|--------|
-| Lockpick | Locked doors, containers | Opens them. Critical failure may jam the lock. |
-| Traps | Trapped containers, doors | Disarms trap. Also arms explosives. |
-| Repair | Broken generators, machinery | Fixes them, often for quest progress. |
-| Science | Computers, terminals | Accesses data, unlocks doors, quest info. |
-| First Aid | Self, party members | Heals 1-5 HP per use. Limited per day. |
-| Doctor | Self, party members | Heals crippled limbs, larger HP restore. Limited per day. |
-| Steal | NPCs | Takes items from their inventory. Failed = hostile. |
-| Outdoorsman | World map (passive) | Avoids random encounters, better travel. |
-| Sneak | Toggle (passive) | Move without being detected. Useful for stealing, avoiding combat. |
+Explosives workflow:
+1. Arm/set timer.
+2. Place or throw.
+3. Move to safe distance.
+4. Wait for blast.
 
 ---
 
-## Inventory Management
+## Obstacle Removal Toolkit
 
-- **Carry weight** is limited by Strength. Drop items if overloaded (movement slowed/blocked).
-- **Equip best available gear**: Armor in armor slot, weapon in a hand slot.
-- **Two hand slots**: Left and right. Switch between them to access different weapons. Default is left hand (unarmed).
-- **Keep healing items accessible**: Stimpaks (pid 40) are the primary healing item. Super Stimpaks heal more.
-- **Save ammo**: Don't waste ranged ammo on weak enemies you can punch. Check ammo count regularly and reload when empty.
-- **Sell excess loot**: Trade unnecessary items for caps, healing, and ammo at merchants.
-- **Quest items**: Don't sell items that NPCs have asked for or that seem unique/important.
+When blocked, try in this order:
 
----
+1. **Normal interaction**: try opening/using the object first.
+2. **Lockpick**: apply via Skilldex to locked door/container.
+3. **Find key / alternate path**: talk, search, inspect nearby areas.
+4. **Science/Repair**: for terminals, control panels, machinery gates.
+5. **Explosives**: for destructible physical obstacles.
 
-## World Map Travel
+For trapped objects:
+- Use **Traps** skill before opening.
 
-- **Movement**: Click destination areas to travel. Travel takes in-game time and may trigger encounters.
-- **Random encounters**: Based on Outdoorsman skill, luck, and terrain. Can be hostile (raiders, animals), neutral (merchants), or special.
-- **Area discovery**: New locations appear on the map when NPCs tell you about them, or when you explore nearby.
-- **Car**: Once acquired, greatly speeds travel and can carry extra inventory. Requires fuel cells.
-- **Rest stops**: Use `rest` to heal between destinations. Time passes.
-- **Terrain**: Desert, mountain, city — affects travel speed and encounter types.
+For hostile blockers:
+- Use **Speech** first if dialogue exists.
+- If combat starts: cripple legs (aimed shots), kite melee enemies, use doorways/chokepoints.
 
 ---
 
-## Economy & Barter
+## Direct Enemy Interactions
 
-- **Caps** are the currency. Also a trade medium.
-- **Barter skill** directly affects prices:
-  - Formula: `cost = base_price × 2 × (160 + npc_barter) / (160 + your_barter)`
-  - At low barter (~16%), items cost about 2× base price to buy
-  - At high barter (~100%+), prices approach base price
-- **Sell loot regularly**: Excess weapons, armor, and junk have value.
-- **Buy priorities**: Healing items > ammo > better armor > better weapons
-- **Trading**: You offer items + caps, merchant offers items + caps. Both sides must balance.
-- **Different merchants carry different stock**: Some specialize in weapons, others in medical supplies.
+Ways to disable or remove enemies beyond basic shooting:
 
----
+- **Aimed leg shots**: reduce enemy mobility so melee enemies cannot keep up.
+- **Aimed eyes/head shots**: high-risk, high-reward disables/crit outcomes.
+- **AP vs JHP ammo swap**:
+  - AP for armored targets.
+  - JHP for lightly armored targets.
+- **Pulse weapons/explosives vs robots**: usually stronger than normal rounds.
+- **Steal + planted explosives**: can place armed explosives on NPCs (very risky if detected).
+- **Pre-fight chem use on self**:
+  - Mentats for dialogue/perception/int checks.
+  - Buffout for strength/endurance/agility bump.
+  - Psycho for temporary survivability.
 
-## Quests
-
-- **Pip-Boy** tracks active quests with descriptions and status
-- **Talk to NPCs** to receive quests — exhaust all dialogue options
-- **Multiple solutions**: Many quests can be solved through combat, speech, stealth, or skill use
-- **Quest XP** is often larger than combat XP — prioritize quest completion
-- **Read everything**: Quest hints come from dialogue, holodisks, and notes found in the world
-- **Time-sensitive quests** exist but are rare. The main quest has a soft time limit.
-- **Quest chains**: Completing one quest may unlock another from the same or different NPC
+If your goal is survival, not loot:
+- Use terrain to split groups.
+- Retreat to exits if the fight is unwinnable.
 
 ---
 
-## Reputation & Karma
+## Skills: What They Do and Where to Use Them
 
-- **Karma**: Global moral score. Positive actions (helping people, fighting evil) increase it. Negative actions (theft, murder, slaving) decrease it.
-- **Town reputation**: Each town tracks how residents feel about you. Reputation comes from completing local quests and behaving well/badly.
-- **Consequences**: Some NPCs won't talk to you with low karma. Some quests require good/bad reputation. Party members may leave if karma conflicts with their values.
-- **Titles**: Karma thresholds grant titles (Berserker, Champion, etc.) that affect NPC reactions.
+### Combat skills
+
+| Skill | Useful for |
+|---|---|
+| Small Guns | Pistols, rifles, shotguns, SMGs |
+| Big Guns | Miniguns, flamers, rocket weapons |
+| Energy Weapons | Laser/plasma/pulse guns |
+| Unarmed | Punch/kick and special unarmed attacks |
+| Melee Weapons | Knives, sledge, spears, melee tools |
+| Throwing | Grenades and thrown items |
+
+### World/utility skills
+
+| Skill | Typical targets | What you get |
+|---|---|---|
+| Lockpick | Doors, containers | Opens locked paths/loot |
+| Science | Computers, robots, high-tech systems | Alternate solutions, data access, control |
+| Repair | Generators, machines, devices, vehicles | Fixes systems, quest progress |
+| Traps | Trapped containers/doors, planted explosives | Detect/disarm traps, safer explosive use |
+| First Aid | Self, companions, NPCs | Minor healing and recovery |
+| Doctor | Self, companions, NPCs | Better healing, fixes crippled limbs |
+| Sneak | Self toggle | Avoid detection, reposition before fights |
+| Steal | NPC inventories | Take items or plant items |
+| Speech | NPC dialogue checks | Avoid fights, better quest outcomes |
+| Barter | Traders | Better buy prices |
+| Outdoorsman | World map travel | Fewer random encounters |
+
+### Knowledge/interaction skills
+
+| Skill | Purpose |
+|---|---|
+| Gambling | Win money at gambling tables |
+| Sneak + Steal combo | Better positioning for theft/planting |
+
+Rule of thumb:
+- If it looks electronic: try **Science**, then **Repair**.
+- If it is locked: try **Lockpick**.
+- If it looks trapped: try **Traps**.
 
 ---
 
-## Party Members
+## Combat Interaction Basics
 
-- **Recruitment**: Talk to potential companions. Some require quests completed, karma thresholds, or payment.
-- **Party size**: Limited by Charisma (CHA/2 members).
-- **Equipment**: Give party members better weapons and armor — they'll use them.
-- **Combat behavior**: Party members act autonomously in combat. They may use burst fire and hit you — position carefully.
-- **Healing**: Use Doctor/First Aid on injured party members. They don't heal on their own (except between map transitions).
-- **Death**: Party members can die permanently. Save before dangerous fights.
+- Combat is turn-based and AP-driven.
+- Common AP costs (varies by weapon): move, attack, reload, use item.
+- Reloading in a bad position gets people killed; manage ammo before pushing.
+
+Aimed shots:
+- Higher AP and lower base hit chance.
+- Better critical outcomes.
+- Practical targets:
+  - **Eyes/head**: high impact, hard to hit.
+  - **Legs**: reduce enemy mobility.
+  - **Torso**: safer aimed option.
+
+Ammo switching:
+- **AP ammo**: better versus armored enemies.
+- **JHP ammo**: better versus unarmored enemies.
+
+Burst caution:
+- Burst can hit allies/bystanders.
+- Be careful with companion loadouts and firing lanes.
 
 ---
 
-## Tips for AI Agents
+## Companion Interactions
 
-- **Explore before assuming**: Don't guess where items are. Search containers, examine objects, and talk to NPCs.
-- **Try the obvious first**: Before using explosives on a door, try opening it, then try lockpicking.
-- **Read feedback**: Check `message_log` and `last_command_debug` after every action to understand what happened.
-- **Save often**: Quicksave before risky actions (combat, explosive usage, stealing).
-- **Be resourceful**: Use skills you have. Low Lockpick? Maybe there's a key. Low Speech? Try a different approach.
-- **Manage HP**: Don't enter combat at low HP. Rest or heal between fights.
-- **Understand AP**: Don't try to attack if you don't have enough AP. End turn instead.
-- **Watch ammo**: Ranged weapons are powerful but limited by ammo. Switch to melee/unarmed when ammo is scarce.
+What you can directly do:
+- Give companions weapons, armor, ammo via trade/barter dialogue.
+- Use Stimpaks on companions.
+- Use Doctor's Bag on companions to treat cripples.
+- Configure some combat behavior through companion dialogue (depends on companion).
+
+High-value habits:
+- Keep companion gear current.
+- Avoid giving companions burst-fire weapons unless you accept friendly fire risk.
+- Carry enough healing to keep the whole party alive.
+
+---
+
+## Exploration and Loot Interactions
+
+- Search containers: lockers, shelves, desks, crates, footlockers, etc.
+- Check corpses after combat.
+- Examine scenery with look cursor for clues or hidden interactions.
+- Skill books grant permanent skill gains up to practical caps.
+
+Inventory discipline:
+- Prioritize value-per-weight loot.
+- Keep ammo and healing stocked.
+- Upgrade armor/weapons early; power spikes are large.
+
+---
+
+## Travel and World Interactions
+
+- World map travel consumes time and can trigger random encounters.
+- Outdoorsman helps avoid encounters.
+- Car (when obtained) improves travel speed and adds trunk storage.
+- Rest via Pip-Boy when safe to recover HP over time.
+
+---
+
+## Quick "Can I Do This?" Answers
+
+| Goal | Yes — how |
+|---|---|
+| Heal companion HP | Use Stimpak (or other healing item) on companion |
+| Fix companion crippled limb | Use Doctor skill, ideally with Doctor's Bag, on companion |
+| Open locked door | Lockpick -> key/search -> Science/Repair path -> explosives |
+| Disarm trap | Use Traps skill on trap/door/container |
+| Use skill on world object | Open Skilldex, choose skill, click object |
+| Beat armored enemies | Use AP ammo, better guns, aimed shots when hit chance allows |
+| Avoid a fight | Speech, Sneak, or leave via exit route |
+| Use explosives on obstacle | Arm explosive, place, move away, detonate |
+| Improve gear effectiveness fast | Upgrade armor tier, use correct ammo type, keep companions equipped |
+
+---
+
+## Save Discipline (Practical)
+
+- Save before: difficult fights, theft, explosives, major dialogue choices.
+- Keep rolling/manual saves by area so you can recover from late-discovered mistakes.

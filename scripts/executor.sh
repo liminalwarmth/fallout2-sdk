@@ -2,11 +2,12 @@
 # executor.sh — Tactical execution helpers for Claude Code gameplay
 #
 # Provides functions for common gameplay loops (combat, movement, exploration,
-# explosives, looting) that can be called from Claude Code to avoid expensive
+# looting) that can be called from Claude Code to avoid expensive
 # polling round-trips.
 #
 # Usage: source scripts/executor.sh
 #        Then call functions like: do_combat, move_and_wait, explore_area, etc.
+#        Run 'executor_help' for full function listing.
 #
 # ═══════════════════════════════════════════════════════════════════════════
 # PLAYER ACTION REFERENCE
@@ -125,6 +126,44 @@
 #   - DO reference docs/gameplay-guide.md for general mechanics knowledge
 #
 # ═══════════════════════════════════════════════════════════════════════════
+# INTERACTION TACTICS
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Common gameplay patterns — combine these tools to solve situations:
+#
+# LOCKED DOOR:    save_before → use_skill lockpick <id> → interact → walk through
+#                 Alt: equip_and_use <explosive_pid> right <timer> + move away
+#                 Alt: find key elsewhere and use_item_on <key_pid> <door_id>
+# TRAPPED:        use_skill traps <id> to disarm, or just trigger and heal
+# DESTRUCTIBLE:   equip_and_use <explosive_pid> right <timer>, then move_and_wait away
+# ITEMS ON WORLD: use_item_on <pid> <id> (rope on well, key on door, etc.)
+# HEALING:        heal_to_full → rest (no hostiles) → use_skill first_aid <self>
+# COMBAT:         do_combat [timeout] — fully autonomous targeting + movement
+# LOOTING:        loot <id> (single container) or explore_area (sweep all nearby)
+# NPC:            talk <id> <opt1> <opt2> ... — exhaust dialogue for quest info
+# NAVIGATION:     move_and_wait <tile>, exit_through "<dest>"
+# SAVE:           save_before "label" — always before lockpick, combat, explosives
+# LEVEL-UP:       character_screen → skill_add per point → perk_add if available
+# CHAR CREATE:    main_menu new_game → skip movies → char_selector_select →
+#                 set SPECIAL/traits/skills/name → editor_done
+# WORLD MAP:      worldmap_travel → poll is_walking → worldmap_enter_location
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# GOTCHAS (scripts don't auto-handle these)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ESCAPE MENU:    Movie-skip escape leaks into gameplay → opens Options menu.
+#                 Usually auto-dismissed; manual: dismiss_options_menu
+# WEAPON HAND:    Weapons equip to right hand, but left hand is active by default.
+#                 equip_and_use handles switching; manual: switch_hand
+# REST+HOSTILES:  rest fails silently when hostile critters are on the map.
+#                 Clear enemies or leave map first.
+# OBJECT TILES:   move_and_wait to a scenery/NPC tile will fail — the object
+#                 blocks it. Use loot/talk/interact (auto-walk) or a neighbor tile.
+# MUSE BATCHING:  Always muse "text"; sleep 1; <action> in ONE Bash call.
+#                 The async float_response.sh hook can clobber muse otherwise.
+#
+# ═══════════════════════════════════════════════════════════════════════════
 
 set -uo pipefail
 
@@ -132,23 +171,6 @@ GAME_DIR="${FALLOUT2_GAME_DIR:-/Users/alexis.radcliff/fallout2-sdk/game}"
 STATE="$GAME_DIR/agent_state.json"
 CMD="$GAME_DIR/agent_cmd.json"
 TMP="$GAME_DIR/agent_cmd.tmp"
-
-# ─── Reflection timer ─────────────────────────────────────────────────
-# Prints a reminder every 3 minutes to pause and reflect on progress.
-
-LAST_REFLECTION_TIME=$(date +%s)
-
-check_reflection_due() {
-    local now=$(date +%s)
-    if (( now - LAST_REFLECTION_TIME >= 180 )); then
-        echo "=== REFLECTION DUE ($(( (now - LAST_REFLECTION_TIME) / 60 ))m since last) ==="
-        echo "    Pause and assess: What have I accomplished? What's my current goal?"
-        echo "    Am I making progress or stuck in a loop?"
-        LAST_REFLECTION_TIME=$now
-        return 0
-    fi
-    return 1
-}
 
 # ─── Core I/O ─────────────────────────────────────────────────────────
 
@@ -158,16 +180,6 @@ send() {
 
 cmd() {
     send "{\"commands\":[$1]}"
-}
-
-cmds() {
-    # Send multiple commands: cmds '{"type":"a"}' '{"type":"b"}'
-    local joined=""
-    for c in "$@"; do
-        [ -n "$joined" ] && joined="$joined,"
-        joined="$joined$c"
-    done
-    send "{\"commands\":[$joined]}"
 }
 
 py() {
@@ -244,6 +256,40 @@ wait_tick_advance() {
     return 1
 }
 
+# ─── Walk-to-object helper ───────────────────────────────────────────
+
+_walk_to_object() {
+    # Walk toward an object by its ID. Looks up tile and distance from state.
+    # Skips walk if already within 5 tiles (engine commands handle final approach).
+    # NOTE: Targets the object's tile directly. For blocking objects (doors, containers),
+    # move_and_wait will stop at the nearest reachable tile after retries.
+    # This is intentional — engine commands (use_object, talk_to, etc.) handle adjacency.
+    local obj_id="$1"
+    local info=$(py "
+for cat in ['critters', 'scenery', 'ground_items', 'exit_grids', 'items']:
+    for o in d.get('objects', {}).get(cat, []):
+        if str(o.get('id')) == '$obj_id':
+            print(f\"{o.get('tile','')}\t{o.get('distance',999)}\")
+            break
+    else:
+        continue
+    break
+")
+    local obj_tile="${info%%	*}"
+    local dist="${info##*	}"
+
+    if [ -z "$obj_tile" ] || [ "$obj_tile" = "None" ] || [ "$obj_tile" = "" ]; then
+        echo "WARN: can't find object $obj_id in state" >&2
+        return 1
+    fi
+
+    if [ "$dist" != "None" ] && [ "$dist" -le 5 ] 2>/dev/null; then
+        return 0
+    fi
+
+    move_and_wait "$obj_tile"
+}
+
 # ─── Movement ─────────────────────────────────────────────────────────
 
 move_and_wait() {
@@ -304,7 +350,6 @@ move_and_wait() {
         fi
     done
     echo "WARN: move_and_wait failed after $max_retries retries (at tile $(field 'player.tile'), target $tile)" >&2
-    check_reflection_due
     return 1
 }
 
@@ -369,7 +414,7 @@ navigate_to() {
         # Check if still moving
         local busy=$(field "player.animation_busy")
         local remaining=$(field "player.movement_waypoints_remaining")
-        if [ "$busy" = "false" ] && [ "${remaining:-0}" = "0" ]; then
+        if [ "$busy" = "false" ] && { [ "$remaining" = "null" ] || [ "$remaining" = "0" ]; }; then
             # Movement stopped — check if we made it
             if [ "$cur_tile" = "$dest_tile" ]; then
                 echo "=== NAVIGATE: arrived at $dest_tile ==="
@@ -397,60 +442,6 @@ navigate_to() {
     done
 
     echo "  TIMEOUT (60s) at tile $(field 'player.tile')"
-    return 1
-}
-
-exit_map() {
-    # Navigate to the nearest exit grid and walk through it.
-    # The engine pathfinder computes the full route; navigate_to monitors
-    # for the map transition when the player walks onto the exit grid.
-    # Args: $1 = destination filter (substring match) or "any" (default)
-    #       $2 = max exit grids to try (default 5)
-    # Returns 0 on successful map transition, 1 on failure.
-    local dest="${1:-any}" max_tries="${2:-5}"
-    local cur_map=$(field "map.name")
-    local cur_elev=$(field "map.elevation")
-
-    echo "=== EXIT_MAP: looking for exit to '$dest' (current: $cur_map elev=$cur_elev) ==="
-
-    # Get exit grids sorted by distance
-    local exits=$(py "
-import json
-exits = d.get('objects', {}).get('exit_grids', [])
-dest = '''$dest'''
-if dest != 'any':
-    exits = [e for e in exits if dest.lower() in e.get('destination_map_name', '').lower()]
-exits.sort(key=lambda e: e.get('distance', 999))
-for e in exits:
-    print(f\"{e.get('tile')}\t{e.get('destination_map_name', '?')}\t{e.get('distance', 999)}\")
-")
-
-    if [ -z "$exits" ]; then
-        echo "  No exit grids found matching '$dest'"
-        return 1
-    fi
-
-    local attempt=0
-    while IFS=$'\t' read -r tile dest_name dist; do
-        [ $attempt -ge $max_tries ] && break
-        attempt=$((attempt + 1))
-
-        echo "  Attempt $attempt: navigate to exit tile $tile -> $dest_name (dist=$dist)"
-        navigate_to "$tile"
-        local result=$?
-
-        # Check if map changed (navigate_to detects this too, but double-check)
-        local new_map=$(field "map.name")
-        local new_elev=$(field "map.elevation")
-        if [ "$new_map" != "$cur_map" ] || [ "$new_elev" != "$cur_elev" ]; then
-            echo "=== EXIT_MAP: transitioned to $new_map elev=$new_elev ==="
-            return 0
-        fi
-
-        [ $result -ne 0 ] && echo "  Exit tile $tile: no path or stuck, trying next..."
-    done <<< "$exits"
-
-    echo "=== EXIT_MAP: FAILED after $attempt attempts (still on $cur_map) ==="
     return 1
 }
 
@@ -488,9 +479,13 @@ do_combat() {
     # Args: $1 = timeout_secs (default 60), $2 = min_hp_pct to heal (default 40)
     local timeout_secs="${1:-60}" heal_pct="${2:-40}"
     local start_time=$(date +%s) action_count=0 consec_fail=0 round=0
-    local stuck_rounds=0 last_n_alive=999 last_total_hp=999999 round_actions=0
+    local stuck_rounds=0 last_n_alive=999 last_total_hp=999999
 
     _combat_heal_failed=0
+    _combat_quip_tick=0    # throttle quips to one per ~3 rounds
+    _combat_kills=0
+    _combat_last_hp=0
+    local _combat_started=0
     echo "=== COMBAT START (timeout=${timeout_secs}s) ==="
     while true; do
         # Wall-clock timeout
@@ -498,7 +493,6 @@ do_combat() {
         local elapsed=$((now - start_time))
         if [ $elapsed -ge $timeout_secs ]; then
             echo "=== COMBAT TIMEOUT (${elapsed}s, actions=$action_count, rounds=$round) ==="
-            check_reflection_due
             return 1
         fi
 
@@ -507,7 +501,8 @@ do_combat() {
         # Combat over?
         if [ "$ctx" != "gameplay_combat" ] && [ "$ctx" != "gameplay_combat_wait" ]; then
             echo "=== COMBAT END (context: $ctx, rounds: $round, actions: $action_count, ${elapsed}s) ==="
-            check_reflection_due
+            # Win quip runs synchronously (not background) so it completes before we return
+            combat_quip_sync win "$_combat_kills kills in $round rounds"
             return 0
         fi
 
@@ -529,12 +524,19 @@ n = alive[0] if alive else None
 w = c.get('active_weapon', {})
 wp = w.get('primary', {})
 total_hp = sum(h.get('hp', 0) for h in alive)
+# Count nearby combatants (within 15 tiles) as 'engaged' — distant ones are bystanders
+nearby = [h for h in alive if h.get('distance', 999) <= 15]
+n_engaged = len(nearby) if nearby else len(alive)
+# Names of engaged enemies for quip context
+engaged_names = list(set(h.get('name','?') for h in (nearby if nearby else alive)))
 print(json.dumps({
     'ap': c.get('current_ap', 0),
     'free_move': c.get('free_move', 0),
     'hp': ch.get('current_hp', 0),
     'max_hp': ch.get('max_hp', 0),
     'n_alive': len(alive),
+    'n_engaged': n_engaged,
+    'engaged_names': ', '.join(engaged_names[:3]),
     'n_id': n['id'] if n else 0,
     'n_dist': n.get('distance', 999) if n else 999,
     'n_tile': n.get('tile', 0) if n else 0,
@@ -552,7 +554,7 @@ print(json.dumps({
             sleep 0.5
             continue
         fi
-        local ap=0 hp=0 max_hp=0 n_alive=0 n_id=0 n_dist=999 n_tile=0 n_name='?' n_hp=0 total_hp=0 free_move=0 w_range=1 w_ap=3 w_name='unarmed'
+        local ap=0 hp=0 max_hp=0 n_alive=0 n_engaged=0 engaged_names='' n_id=0 n_dist=999 n_tile=0 n_name='?' n_hp=0 total_hp=0 free_move=0 w_range=1 w_ap=3 w_name='unarmed'
         eval $(echo "$info" | python3 -c "
 import json, sys, shlex
 d = json.load(sys.stdin)
@@ -570,7 +572,36 @@ for k,v in d.items():
             continue
         fi
 
-        echo "  Round $round: AP=$ap(+${free_move}fm) HP=$hp/$max_hp [weapon: $w_name rng=$w_range] vs $n_name($n_hp hp, dist=$n_dist) [$n_alive alive]"
+        echo "  Round $round: AP=$ap(+${free_move}fm) HP=$hp/$max_hp [weapon: $w_name rng=$w_range] vs $n_name($n_hp hp, dist=$n_dist) [$n_engaged engaged, $n_alive total]"
+
+        # Combat quips at key moments — use n_engaged (actual combatants) not n_alive
+        if [ "$_combat_started" -eq 0 ]; then
+            _combat_started=1
+            _combat_quip_tick=0  # always quip at start
+            combat_quip start
+            _combat_last_hp=$hp
+            sleep 1
+        fi
+        # Detect kills (enemy count dropped)
+        if [ $round -gt 0 ] && [ "$n_alive" -lt "$last_n_alive" ] 2>/dev/null; then
+            local killed=$((last_n_alive - n_alive))
+            _combat_kills=$((_combat_kills + killed))
+            _combat_quip_tick=0  # always quip on kills
+            combat_quip kill "Round $round, $_combat_kills total kills"
+            sleep 1
+        fi
+        # Detect taking damage — big_hurt if >25% max HP lost, else hurt
+        if [ "$_combat_last_hp" -gt 0 ] && [ "$hp" -lt "$_combat_last_hp" ]; then
+            local dmg_taken=$((_combat_last_hp - hp))
+            if [ "$max_hp" -gt 0 ] && [ $((dmg_taken * 100 / max_hp)) -ge 25 ]; then
+                _combat_quip_tick=0  # force quip on big hurt
+                combat_quip big_hurt "Took $dmg_taken damage in round $round"
+            else
+                combat_quip hurt "Took $dmg_taken damage in round $round"
+            fi
+            sleep 1
+        fi
+        _combat_last_hp=$hp
 
         # Stuck detection: count rounds where no enemies died AND total enemy HP didn't drop
         if [ $round -gt 0 ]; then
@@ -582,11 +613,13 @@ for k,v in d.items():
         fi
         last_n_alive=$n_alive
         last_total_hp=$total_hp
-        round_actions=0
 
         # If stuck for 8+ rounds with no progress, flee combat
         if [ $stuck_rounds -ge 8 ]; then
             echo "    STUCK for $stuck_rounds rounds, fleeing combat"
+            _combat_quip_tick=0
+            combat_quip flee "Stuck $stuck_rounds rounds, round $round"
+            sleep 1
             cmd '{"type":"flee_combat"}'
             sleep 2
             wait_tick_advance 20
@@ -608,6 +641,9 @@ for k,v in d.items():
             local hp_pct=$((hp * 100 / max_hp))
             if [ $hp_pct -lt 20 ]; then
                 echo "    CRITICAL HP ($hp_pct%), fleeing!"
+                _combat_quip_tick=0  # force quip
+                combat_quip critical_hp "Round $round"
+                sleep 1
                 cmd '{"type":"flee_combat"}'
                 sleep 2
                 wait_tick_advance 20
@@ -686,6 +722,7 @@ for k,v in d.items():
 
         # In range — attack!
         if [ "$n_id" != "0" ]; then
+            local target_hp_before=$n_hp
             echo "    Attacking $n_name"
             cmd "{\"type\":\"attack\",\"target_id\":$n_id}"
             sleep 0.5
@@ -708,6 +745,27 @@ for k,v in d.items():
                 fi
             else
                 consec_fail=0
+                # Detect big hits — check target HP after attack
+                local target_hp_after=$(py "
+import json
+c = d.get('combat', {})
+for h in c.get('hostiles', []):
+    if h.get('id') == $n_id:
+        print(h.get('hp', 0))
+        break
+else:
+    print(0)
+" 2>/dev/null)
+                target_hp_after=${target_hp_after:-0}
+                if [ "$target_hp_before" -gt 0 ] && [ "$target_hp_after" -lt "$target_hp_before" ]; then
+                    local dmg_dealt=$((target_hp_before - target_hp_after))
+                    # Big hit: dealt >15 damage or killed the target
+                    if [ "$dmg_dealt" -ge 15 ] || [ "$target_hp_after" -le 0 ]; then
+                        _combat_quip_tick=0  # force quip on big hit
+                        combat_quip big_hit "Dealt $dmg_dealt damage in round $round"
+                        sleep 0.5
+                    fi
+                fi
             fi
         else
             cmd '{"type":"end_turn"}'
@@ -721,13 +779,57 @@ for k,v in d.items():
 # ─── Exit Through ────────────────────────────────────────────────────
 
 exit_through() {
-    # Walk onto exit grid tiles to trigger a natural map transition.
-    # Uses navigate_to for long-distance pathfinding to exit grids.
-    # Args: $1 = destination map name (substring match) or "any"
-    #       $2 = max exits to try (default 5)
-    # Returns 0 on successful transition, 1 on failure.
-    # NOTE: Prefer exit_map() which is an alias with the same behavior.
-    exit_map "$@"
+    # Navigate to the nearest exit grid and walk through it.
+    # The engine pathfinder computes the full route; navigate_to monitors
+    # for the map transition when the player walks onto the exit grid.
+    # Args: $1 = destination filter (substring match) or "any" (default)
+    #       $2 = max exit grids to try (default 5)
+    # Returns 0 on successful map transition, 1 on failure.
+    local dest="${1:-any}" max_tries="${2:-5}"
+    local cur_map=$(field "map.name")
+    local cur_elev=$(field "map.elevation")
+
+    echo "=== EXIT_THROUGH: looking for exit to '$dest' (current: $cur_map elev=$cur_elev) ==="
+
+    # Get exit grids sorted by distance
+    local exits=$(py "
+import json
+exits = d.get('objects', {}).get('exit_grids', [])
+dest = '''$dest'''
+if dest != 'any':
+    exits = [e for e in exits if dest.lower() in e.get('destination_map_name', '').lower()]
+exits.sort(key=lambda e: e.get('distance', 999))
+for e in exits:
+    print(f\"{e.get('tile')}\t{e.get('destination_map_name', '?')}\t{e.get('distance', 999)}\")
+")
+
+    if [ -z "$exits" ]; then
+        echo "  No exit grids found matching '$dest'"
+        return 1
+    fi
+
+    local attempt=0
+    while IFS=$'\t' read -r tile dest_name dist; do
+        [ $attempt -ge $max_tries ] && break
+        attempt=$((attempt + 1))
+
+        echo "  Attempt $attempt: navigate to exit tile $tile -> $dest_name (dist=$dist)"
+        navigate_to "$tile"
+        local result=$?
+
+        # Check if map changed (navigate_to detects this too, but double-check)
+        local new_map=$(field "map.name")
+        local new_elev=$(field "map.elevation")
+        if [ "$new_map" != "$cur_map" ] || [ "$new_elev" != "$cur_elev" ]; then
+            echo "=== EXIT_THROUGH: transitioned to $new_map elev=$new_elev ==="
+            return 0
+        fi
+
+        [ $result -ne 0 ] && echo "  Exit tile $tile: no path or stuck, trying next..."
+    done <<< "$exits"
+
+    echo "=== EXIT_THROUGH: FAILED after $attempt attempts (still on $cur_map) ==="
+    return 1
 }
 
 # ─── Equip & Use ─────────────────────────────────────────────────────
@@ -769,102 +871,6 @@ equip_and_use() {
     wait_tick_advance 5
 }
 
-arm_and_detonate() {
-    # Full explosive workflow using the player-like equip → use flow:
-    #   1. Walk adjacent to target
-    #   2. Equip explosive, switch hand, use it (timer bypass)
-    #   3. Run away from blast radius
-    #   4. Wait for detonation
-    #   5. Report result
-    #
-    # Usage: arm_and_detonate <target_id> <safe_tile> [explosive_pid] [timer_secs]
-    local target_id="$1" safe_tile="$2" explosive_pid="${3:-85}" timer_secs="${4:-30}"
-
-    echo "=== ARM_AND_DETONATE: target=$target_id explosive=pid$explosive_pid ==="
-
-    # Step 1: Check we have the explosive
-    local have=$(py "
-inv = d.get('inventory', {}).get('items', [])
-found = [i for i in inv if i.get('pid') == $explosive_pid]
-print(len(found))
-")
-    if [ "$have" = "0" ]; then
-        echo "  ERROR: No explosive with pid=$explosive_pid in inventory"
-        return 1
-    fi
-
-    # Step 2: Walk adjacent to target
-    local target_tile=$(py "
-import json
-for cat in ['scenery', 'critters', 'ground_items']:
-    for obj in d.get('objects', {}).get(cat, []):
-        if obj.get('id') == $target_id:
-            print(obj.get('tile', 0))
-            break
-    else:
-        continue
-    break
-else:
-    print(0)
-")
-    if [ "$target_tile" = "0" ]; then
-        echo "  ERROR: Cannot find target object $target_id"
-        return 1
-    fi
-
-    echo "  Walking to target tile $target_tile..."
-    cmd "{\"type\":\"run_to\",\"tile\":$target_tile}"
-    sleep 0.5
-    wait_idle 30
-
-    # Step 3: Equip and use explosive (player-like flow)
-    echo "  Equipping and using explosive (pid=$explosive_pid, timer=${timer_secs}s)..."
-    equip_and_use $explosive_pid right $timer_secs
-
-    local dbg=$(last_debug)
-    echo "  Use result: $dbg"
-
-    # Step 4: Run to safe distance
-    echo "  Running to safe tile $safe_tile..."
-    cmd "{\"type\":\"run_to\",\"tile\":$safe_tile}"
-    sleep 0.5
-    wait_idle 30
-
-    # Step 5: Wait for detonation
-    local wait_secs=$((timer_secs + 5))
-    echo "  Waiting ${wait_secs}s for detonation..."
-    sleep $wait_secs
-
-    # Step 6: Check if target was destroyed
-    local still_there=$(py "
-import json
-for cat in ['scenery', 'critters', 'ground_items']:
-    for obj in d.get('objects', {}).get(cat, []):
-        if obj.get('id') == $target_id:
-            print('yes')
-            break
-    else:
-        continue
-    break
-else:
-    print('no')
-")
-
-    if [ "$still_there" = "no" ]; then
-        echo "=== ARM_AND_DETONATE: SUCCESS — target destroyed ==="
-        return 0
-    else
-        echo "=== ARM_AND_DETONATE: target still present (may have changed state) ==="
-        local msgs=$(py "
-msgs = d.get('message_log', [])
-for m in msgs[-5:]:
-    print(m)
-")
-        echo "  Recent messages: $msgs"
-        return 1
-    fi
-}
-
 # ─── Exploration ─────────────────────────────────────────────────────
 
 explore_area() {
@@ -873,8 +879,11 @@ explore_area() {
     local max_dist="${1:-25}"
 
     echo "=== EXPLORE_AREA (max_dist=$max_dist) ==="
+    local _explore_quips=("Time to see what the wasteland left behind." "Loot run. My favorite cardio." "Everything not nailed down is technically salvage." "Finder's keepers. Wasteland rules.")
+    muse "${_explore_quips[$((RANDOM % ${#_explore_quips[@]}))]}"
+    sleep 1
 
-    # Get containers (scenery with items) and ground items
+    # Get containers (scenery with items) and ground items — tab-delimited for perf
     local targets=$(py "
 import json
 objs = d.get('objects', {})
@@ -896,7 +905,7 @@ for s in scenery:
             'name': s.get('name', '?'),
             'tile': s.get('tile', 0),
             'dist': s.get('distance', 999),
-            'items': s.get('item_count', 0)
+            'pid': 0
         })
 
 # Ground items
@@ -914,7 +923,7 @@ for g in ground:
 
 results.sort(key=lambda r: r['dist'])
 for r in results:
-    print(json.dumps(r, separators=(',',':')))
+    print(f\"{r['type']}\t{r['id']}\t{r['name']}\t{r['dist']}\t{r['tile']}\t{r['pid']}\")
 ")
 
     if [ -z "$targets" ]; then
@@ -923,18 +932,10 @@ for r in results:
     fi
 
     local looted=0 picked=0
-    while IFS= read -r line; do
-        local obj_type=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['type'])")
-        local obj_id=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-        local obj_name=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['name'])")
-        local obj_dist=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['dist'])")
-
-        local obj_tile=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['tile'])")
-
+    while IFS=$'\t' read -r obj_type obj_id obj_name obj_dist obj_tile obj_pid; do
         if [ "$obj_type" = "container" ]; then
             echo "  Looting $obj_name (id=$obj_id, dist=$obj_dist)..."
-            # loot_all already walks to container
-            loot_all "$obj_id" && looted=$((looted + 1))
+            loot "$obj_id" && looted=$((looted + 1))
             sleep 0.5
         elif [ "$obj_type" = "ground_item" ]; then
             echo "  Picking up $obj_name (id=$obj_id, dist=$obj_dist)..."
@@ -949,14 +950,24 @@ for r in results:
     done <<< "$targets"
 
     echo "=== EXPLORE_AREA: looted $looted containers, picked up $picked items ==="
-    check_reflection_due
+    if [ $((looted + picked)) -gt 0 ]; then
+        local _loot_quips=("Not bad. Not bad at all." "The wasteland provides." "Shopping spree complete." "Every bit counts out here.")
+        muse "${_loot_quips[$((RANDOM % ${#_loot_quips[@]}))]}"
+        sleep 1
+    else
+        muse "Nothing worth taking. Disappointing."
+        sleep 1
+    fi
 }
 
-examine_object() {
-    # Look at an object and report the result from message_log.
+# ─── Interaction ──────────────────────────────────────────────────────
+
+examine() {
+    # Auto-walk to object, look at it, and report the result from message_log.
     # Args: $1 = object id
     local obj_id="$1"
 
+    _walk_to_object "$obj_id" || true
     cmd "{\"type\":\"look_at\",\"object_id\":$obj_id}"
     sleep 1
     wait_tick_advance 10
@@ -974,7 +985,7 @@ if msgs:
     echo "Debug: $dbg"
 }
 
-check_inventory_for() {
+check_inventory() {
     # Search inventory for items matching a keyword (case-insensitive).
     # Args: $1 = keyword to search for
     local keyword="$1"
@@ -993,24 +1004,60 @@ else:
 "
 }
 
+interact() {
+    # Auto-walk to object, use it, and wait for idle.
+    # Args: $1 = object id
+    local obj_id="$1"
+    _walk_to_object "$obj_id" || true
+    cmd "{\"type\":\"use_object\",\"object_id\":$obj_id}"
+    sleep 1
+    wait_idle
+}
+
+use_skill() {
+    # Auto-walk to object, apply a skill, and wait for idle.
+    # Args: $1 = skill name, $2 = object id
+    local skill="$1" obj_id="$2"
+    _walk_to_object "$obj_id" || true
+    cmd "{\"type\":\"use_skill\",\"skill\":\"$skill\",\"object_id\":$obj_id}"
+    sleep 1.5
+    wait_idle
+}
+
+use_item_on() {
+    # Auto-walk to object, use an inventory item on it, and wait for idle.
+    # Args: $1 = item pid, $2 = object id
+    local item_pid="$1" obj_id="$2"
+    _walk_to_object "$obj_id" || true
+    cmd "{\"type\":\"use_item_on\",\"item_pid\":$item_pid,\"object_id\":$obj_id}"
+    sleep 1.5
+    wait_idle
+}
+
+talk() {
+    # Auto-walk to NPC, initiate dialogue, then select options in sequence.
+    # Usage: talk <obj_id> <option1> [option2] [option3] ...
+    local obj_id="$1"; shift
+    _walk_to_object "$obj_id" || true
+    cmd "{\"type\":\"talk_to\",\"object_id\":$obj_id}"
+    sleep 1.5
+    for opt in "$@"; do
+        wait_context "gameplay_dialogue" 15 || return 1
+        sleep 0.5
+        cmd "{\"type\":\"select_dialogue\",\"index\":$opt}"
+        sleep 1
+    done
+    # Auto-capture dialogue info when conversation ends
+    post_dialogue_hook
+}
+
 # ─── Loot ─────────────────────────────────────────────────────────────
 
-loot_all() {
-    # Walk to container, open, take all, close. Args: $1 = object id
+loot() {
+    # Auto-walk to container, open, take all, close. Args: $1 = object id
     local obj_id="$1"
 
-    # Find container tile from current objects and walk there first
-    local container_tile=$(py "
-objs = d.get('objects', {})
-for cat in ['scenery', 'ground_items', 'items']:
-    for o in objs.get(cat, []):
-        if str(o.get('id')) == '$obj_id':
-            print(o.get('tile', ''))
-            break
-")
-    if [ -n "$container_tile" ] && [ "$container_tile" != "None" ]; then
-        move_and_wait "$container_tile" || echo "  WARN: couldn't reach container tile $container_tile, trying anyway"
-    fi
+    _walk_to_object "$obj_id" || echo "  WARN: couldn't reach container, trying anyway"
 
     # Snapshot inventory BEFORE looting
     local inv_before=$(py "
@@ -1075,35 +1122,68 @@ else:
 
 # ─── Healing ─────────────────────────────────────────────────────────
 
-use_healing() {
-    # Use healing items outside combat. Tries Healing Powder (pid=81), then Stimpak (pid=40).
-    local hp=$(py "ds=d.get('character',{}).get('derived_stats',{}); print(ds.get('current_hp',0))")
-    local max_hp=$(py "ds=d.get('character',{}).get('derived_stats',{}); print(ds.get('max_hp',0))")
-    hp="${hp:-0}"; max_hp="${max_hp:-0}"
-
-    if [ "$hp" -ge "$max_hp" ] 2>/dev/null; then
-        echo "HP full ($hp/$max_hp)"
-        return 0
-    fi
-
-    for pid in 81 40; do
-        local has=$(py "
+heal_to_full() {
+    # Loop healing until HP=max or no items left.
+    # Tries Healing Powder (pid=81, cheaper) then Stimpak (pid=40) each iteration.
+    # Single py() call per iteration for performance.
+    local max_loops=10
+    local i=0
+    while [ $i -lt $max_loops ]; do
+        local info=$(py "
+ds = d.get('character', {}).get('derived_stats', {})
+hp, max_hp = ds.get('current_hp', 0), ds.get('max_hp', 0)
 inv = d.get('inventory', {}).get('items', [])
-found = [i for i in inv if i.get('pid') == $pid]
-print(found[0].get('name','?') if found else '')
+powder = next((it for it in inv if it.get('pid') == 81), None)
+stimpak = next((it for it in inv if it.get('pid') == 40), None)
+heal = powder or stimpak
+pid = heal.get('pid', 0) if heal else 0
+name = heal.get('name', '?') if heal else ''
+print(f\"{hp}\t{max_hp}\t{pid}\t{name}\")
 ")
-        if [ -n "$has" ]; then
-            echo "Using $has (HP $hp/$max_hp)"
-            cmd "{\"type\":\"use_item\",\"item_pid\":$pid}"
-            sleep 1
-            wait_tick_advance 5
-            local new_hp=$(py "ds=d.get('character',{}).get('derived_stats',{}); print(ds.get('current_hp',0))")
-            echo "HP: $hp -> $new_hp / $max_hp"
+        local hp="${info%%	*}"; info="${info#*	}"
+        local max_hp="${info%%	*}"; info="${info#*	}"
+        local heal_pid="${info%%	*}"
+        local heal_name="${info##*	}"
+
+        if [ "$hp" -ge "$max_hp" ] 2>/dev/null; then
+            echo "HP full ($hp/$max_hp)"
             return 0
         fi
+        if [ "$heal_pid" = "0" ] || [ -z "$heal_name" ]; then
+            echo "No healing items (HP $hp/$max_hp)"
+            return 1
+        fi
+
+        echo "Using $heal_name (HP $hp/$max_hp)"
+        cmd "{\"type\":\"use_item\",\"item_pid\":$heal_pid}"
+        sleep 1
+        wait_tick_advance 5
+        i=$((i + 1))
     done
-    echo "No healing items (HP $hp/$max_hp)"
-    return 1
+    echo "Heal loop limit reached"
+}
+
+# ─── Save/Load ───────────────────────────────────────────────────────
+
+quicksave() {
+    cmd '{"type":"quicksave"}'
+    sleep 1
+    wait_tick_advance 5
+    echo "Quicksaved"
+}
+
+quickload() {
+    cmd '{"type":"quickload"}'
+    sleep 2
+    wait_tick_advance 10
+    echo "Quickloaded"
+}
+
+save_before() {
+    # Quicksave + game_log entry. Use before risky actions (lockpick, combat, explosives).
+    local label="${1:-risky action}"
+    quicksave
+    game_log "**SAVE POINT:** $label"
 }
 
 # ─── UI Fixes ────────────────────────────────────────────────────────
@@ -1120,127 +1200,39 @@ dismiss_options_menu() {
     fi
 }
 
-# ─── Interaction ──────────────────────────────────────────────────────
+# ─── State Inspection ────────────────────────────────────────────────
 
-use_object_and_wait() {
-    local obj_id="$1"
-    cmd "{\"type\":\"use_object\",\"object_id\":$obj_id}"
-    sleep 1
-    wait_idle
-}
-
-use_skill_and_wait() {
-    local skill="$1" obj_id="$2"
-    cmd "{\"type\":\"use_skill\",\"skill\":\"$skill\",\"object_id\":$obj_id}"
-    sleep 1.5
-    wait_idle
-}
-
-# Skill attempt tracking — prevents infinite retry loops
-typeset -A SKILL_ATTEMPTS 2>/dev/null || declare -A SKILL_ATTEMPTS
-
-use_skill_tracked() {
-    # Use a skill with attempt tracking. Gives up after max attempts.
-    # Args: $1=skill $2=object_id $3=max_attempts(default 5)
-    local skill="$1" obj_id="$2" max="${3:-5}"
-    local key="${skill}_${obj_id}"
-    local count=${SKILL_ATTEMPTS[$key]:-0}
-    if (( count >= max )); then
-        echo "WARN: $skill on object $obj_id failed $count times, giving up"
-        return 1
-    fi
-    SKILL_ATTEMPTS[$key]=$((count + 1))
-    use_skill_and_wait "$skill" "$obj_id"
-}
-
-reset_skill_attempts() {
-    SKILL_ATTEMPTS=()
-}
-
-use_item_on_and_wait() {
-    local item_pid="$1" obj_id="$2"
-    cmd "{\"type\":\"use_item_on\",\"item_pid\":$item_pid,\"object_id\":$obj_id}"
-    sleep 1.5
-    wait_idle
-}
-
-talk_and_choose() {
-    # Talk to NPC, then select dialogue options in sequence
-    # Usage: talk_and_choose <obj_id> <option1> [option2] [option3] ...
-    local obj_id="$1"; shift
-    cmd "{\"type\":\"talk_to\",\"object_id\":$obj_id}"
-    sleep 1.5
-    for opt in "$@"; do
-        wait_context "gameplay_dialogue" 15 || return 1
-        sleep 0.3
-        cmd "{\"type\":\"select_dialogue\",\"index\":$opt}"
-        sleep 1
-    done
-    # Auto-capture dialogue info when conversation ends
-    post_dialogue_hook
-}
-
-# ─── State Snapshot ───────────────────────────────────────────────────
-
-snapshot() {
-    # Print a compact summary of current state for Claude to reason about
+status() {
+    # Ultra-compact one-liner: HP, tile, map, context, object counts.
     py "
-import json
+ch = d.get('character', {}).get('derived_stats', {})
+hp = ch.get('current_hp', '?')
+max_hp = ch.get('max_hp', '?')
+m = d.get('map', {})
+tile = d.get('player', {}).get('tile', '?')
 ctx = d.get('context', '?')
-tick = d.get('tick', 0)
-result = {'context': ctx, 'tick': tick}
-
-if 'player' in d:
-    p = d['player']
-    result['tile'] = p.get('tile')
-    result['busy'] = p.get('animation_busy', False)
-
-if 'map' in d:
-    m = d['map']
-    result['map'] = m.get('name', '?')
-    result['elevation'] = m.get('elevation', 0)
-
-if 'character' in d:
-    ch = d['character']
-    ds = ch.get('derived_stats', {})
-    result['hp'] = f\"{ds.get('current_hp', '?')}/{ds.get('max_hp', '?')}\"
-    poison = ds.get('poison_level', 0)
-    if poison:
-        result['poison'] = poison
-    result['level'] = ch.get('level', 1)
-    result['xp'] = ch.get('experience', 0)
-
-if 'combat' in d:
-    c = d['combat']
-    result['ap'] = c.get('current_ap')
-    hostiles = [h for h in c.get('hostiles', []) if h.get('hp', 0) > 0]
-    result['hostiles'] = len(hostiles)
-
-if 'objects' in d:
-    o = d['objects']
-    result['critters'] = len(o.get('critters', []))
-    result['exits'] = len(o.get('exit_grids', []))
-    result['scenery'] = len(o.get('scenery', []))
-    result['ground_items'] = len(o.get('ground_items', []))
-
-if 'inventory' in d:
-    inv = d['inventory']
-    result['items'] = len(inv.get('items', []))
-
-if 'message_log' in d:
-    msgs = d.get('message_log', [])
-    if msgs:
-        result['last_msg'] = msgs[-1] if len(msgs[-1]) < 80 else msgs[-1][:77] + '...'
-
-if 'party_members' in d:
-    result['party'] = len(d['party_members'])
-
-print(json.dumps(result, indent=2))
+lvl = d.get('character', {}).get('level', '?')
+xp = d.get('character', {}).get('experience', '?')
+objs = d.get('objects', {})
+parts = []
+n_critters = len(objs.get('critters', []))
+n_scenery = len(objs.get('scenery', []))
+n_exits = len(objs.get('exit_grids', []))
+n_ground = len(objs.get('ground_items', []))
+if n_critters: parts.append(f'{n_critters} critters')
+if n_scenery: parts.append(f'{n_scenery} scenery')
+if n_exits: parts.append(f'{n_exits} exits')
+if n_ground: parts.append(f'{n_ground} ground')
+obj_str = ', '.join(parts) if parts else 'empty'
+poison = ch.get('poison_level', 0)
+extra = f' POISON:{poison}' if poison else ''
+print(f\"HP:{hp}/{max_hp} Lv:{lvl} Tile:{tile} {m.get('name','?')} {ctx} [{obj_str}]{extra}\")
 "
 }
 
-objects_near() {
-    # Print objects near player for strategic planning
+look_around() {
+    # Print objects near player for strategic planning.
+    # Falls back to approximate hex distance when engine distance is null.
     py "
 import json
 objs = d.get('objects', {})
@@ -1248,36 +1240,56 @@ critters = objs.get('critters', [])
 scenery = objs.get('scenery', [])
 exits = objs.get('exit_grids', [])
 ground = objs.get('ground_items', [])
+ptile = d.get('player', {}).get('tile', 0)
+
+def approx_dist(tile):
+    if not tile or not ptile: return '?'
+    r1, c1 = divmod(ptile, 200)
+    r2, c2 = divmod(tile, 200)
+    return max(abs(r1 - r2), abs(c1 - c2))
+
+def get_dist(obj):
+    dist = obj.get('distance')
+    if dist is None:
+        dist = approx_dist(obj.get('tile', 0))
+    return dist
+
+def sort_key(obj):
+    dist_val = obj.get('distance')
+    if dist_val is None:
+        dist_val = approx_dist(obj.get('tile', 0))
+    return dist_val if isinstance(dist_val, (int, float)) else 999
 
 if critters:
     print('CRITTERS:')
-    for c in sorted(critters, key=lambda x: x.get('distance', 999)):
+    for c in sorted(critters, key=sort_key):
         hp_str = f\"hp={c.get('hp')}/{c.get('max_hp')}\" if 'hp' in c else ''
-        print(f\"  {c.get('name','?')} id={c.get('id')} tile={c.get('tile')} dist={c.get('distance')} {hp_str} team={c.get('team',0)}\")
+        print(f\"  {c.get('name','?')} id={c.get('id')} tile={c.get('tile')} dist={get_dist(c)} {hp_str} team={c.get('team',0)}\")
 
 if scenery:
     print('SCENERY:')
-    for s in sorted(scenery, key=lambda x: x.get('distance', 999)):
+    for s in sorted(scenery, key=sort_key):
         extra = ''
         if s.get('scenery_type') == 'door':
             extra = f\" open={s.get('open')} locked={s.get('locked')}\"
         elif s.get('item_count', 0) > 0:
             extra = f\" items={s.get('item_count')}\"
-        print(f\"  {s.get('name','?')} id={s.get('id')} tile={s.get('tile')} dist={s.get('distance')} type={s.get('scenery_type','?')}{extra}\")
+        print(f\"  {s.get('name','?')} id={s.get('id')} tile={s.get('tile')} dist={get_dist(s)} type={s.get('scenery_type','?')}{extra}\")
 
 if exits:
     print('EXIT GRIDS:')
-    for e in sorted(exits, key=lambda x: x.get('distance', 999)):
-        print(f\"  tile={e.get('tile')} dist={e.get('distance')} -> {e.get('destination_map_name','?')} (map={e.get('destination_map')}, elev={e.get('destination_elevation')})\")
+    for e in sorted(exits, key=sort_key):
+        print(f\"  tile={e.get('tile')} dist={get_dist(e)} -> {e.get('destination_map_name','?')} (map={e.get('destination_map')}, elev={e.get('destination_elevation')})\")
 
 if ground:
     print('GROUND ITEMS:')
-    for g in sorted(ground, key=lambda x: x.get('distance', 999)):
-        print(f\"  {g.get('name','?')} id={g.get('id')} tile={g.get('tile')} dist={g.get('distance')} pid={g.get('pid')}\")
+    for g in sorted(ground, key=sort_key):
+        print(f\"  {g.get('name','?')} id={g.get('id')} tile={g.get('tile')} dist={get_dist(g)} pid={g.get('pid')}\")
 "
 }
 
-inventory_summary() {
+inventory() {
+    # Print equipped items and inventory list.
     py "
 inv = d.get('inventory', {})
 items = inv.get('items', [])
@@ -1304,11 +1316,17 @@ game_log() {
     # Usage: game_log "**Decision:** ...\n**Action:** ...\n**Result:** ...\nTags: ..."
     local text="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M')
-    local map=$(field "map.name" 2>/dev/null || echo "unknown")
-    local ctx=$(context 2>/dev/null || echo "unknown")
-    local tile=$(field "player.tile" 2>/dev/null || echo "?")
-    local hp=$(py "ds=d.get('character',{}).get('derived_stats',{}); print(f\"{ds.get('current_hp','?')}/{ds.get('max_hp','?')}\")" 2>/dev/null || echo "?/?")
-    local level=$(field "character.level" 2>/dev/null || echo "?")
+    # Single py() call for all metadata (5x fewer subprocesses)
+    local meta=$(py "
+ch = d.get('character', {})
+ds = ch.get('derived_stats', {})
+print(f\"{d.get('map',{}).get('name','unknown')}\t{d.get('context','unknown')}\t{d.get('player',{}).get('tile','?')}\t{ds.get('current_hp','?')}/{ds.get('max_hp','?')}\t{ch.get('level','?')}\")
+" 2>/dev/null || echo "unknown	unknown	?	?/?	?")
+    local map="${meta%%	*}"; meta="${meta#*	}"
+    local ctx="${meta%%	*}"; meta="${meta#*	}"
+    local tile="${meta%%	*}"; meta="${meta#*	}"
+    local hp="${meta%%	*}"
+    local level="${meta##*	}"
 
     {
         echo ""
@@ -1374,10 +1392,14 @@ LAST_MAP_ELEVATION=""
 
 post_transition_hook() {
     # Auto-record location + nearby objects after a map transition.
+    # Also auto-dismisses leaked Options menu from movie skips.
     # Call this after confirming a map transition has occurred.
     local map_name=$(field "map.name")
     local elevation=$(field "map.elevation")
     local tile=$(field "player.tile")
+
+    # Auto-dismiss leaked options menu after transitions
+    dismiss_options_menu
 
     # Skip if we haven't actually transitioned
     if [ "$map_name" = "$LAST_MAP_NAME" ] && [ "$elevation" = "$LAST_MAP_ELEVATION" ]; then
@@ -1390,10 +1412,10 @@ post_transition_hook() {
 objs = d.get('objects', {})
 critters = [c.get('name','?') for c in objs.get('critters', []) if c.get('distance', 999) <= 20]
 scenery = [s.get('name','?') for s in objs.get('scenery', []) if s.get('distance', 999) <= 15]
-exits = [e.get('destination','?') for e in objs.get('exit_grids', [])]
+exits = [e.get('destination_map_name','?') for e in objs.get('exit_grids', [])]
 parts = []
 if critters: parts.append('NPCs: ' + ', '.join(set(critters)))
-if scenery[:5]: parts.append('Scenery: ' + ', '.join(set(scenery[:5])))
+if scenery: parts.append('Scenery: ' + ', '.join(list(set(scenery))[:5]))
 if exits: parts.append('Exits: ' + ', '.join(set(exits)))
 print('; '.join(parts) if parts else 'empty area')
 ")
@@ -1420,6 +1442,7 @@ print(reply[:120] if reply else '')
         echo "AUTO-NOTE: Talked to $npc_name"
     fi
 }
+
 
 # ─── Persona & Thought Log ────────────────────────────────────────────
 
@@ -1451,89 +1474,199 @@ HEADER
 
 muse() {
     # Quick floating thought above the player's head — no log entry.
-    # Use for moment-to-moment reflections, tactical observations, reactions.
+    # Spin-waits before and after dispatch to avoid clobbering pending/next commands.
+    # Sanitizes Unicode to ASCII 32-126 (Fallout 2 font range).
     # Usage: muse "text to display"
     if [ $# -lt 1 ] || [ -z "$1" ]; then return; fi
     local text="$1"
-    local escaped=$(echo "$text" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))")
+    local escaped=$(echo "$text" | python3 -c "
+import sys, json
+SUBS = {
+    '\u2014': '--', '\u2013': '-', '\u2018': \"'\", '\u2019': \"'\",
+    '\u201c': '\"', '\u201d': '\"', '\u2026': '...', '\u2022': '*',
+    '\u00b7': '*', '\u2010': '-', '\u2011': '-', '\u00a0': ' ',
+    '\u200b': '', '\u2032': \"'\", '\u2033': '\"', '\u00d7': 'x',
+    '\u2192': '->', '\u2190': '<-', '\u2264': '<=', '\u2265': '>=',
+    '\u2260': '!=',
+}
+text = sys.stdin.read().strip()
+for old, new in SUBS.items():
+    text = text.replace(old, new)
+text = ''.join(c if 32 <= ord(c) <= 126 or c == '\n' else '' for c in text)
+print(json.dumps(text))
+")
+    for i in 1 2 3 4 5; do [ ! -f "$CMD" ] && break; sleep 0.1; done
     cmd "{\"type\":\"float_thought\",\"text\":$escaped}"
+    for i in 1 2 3 4 5; do [ ! -f "$CMD" ] && break; sleep 0.1; done
+}
+
+_combat_quip_generate() {
+    # Generate a combat quip using Sonnet + full game state + character persona.
+    # Args: $1=event  $2=extra context (optional)
+    # Reads agent_state.json directly for full combat awareness.
+    local event="$1" extra="${2:-}"
+
+    # Build full combat context from live game state + persona
+    local prompt
+    prompt=$(python3 -c "
+import json, re, sys
+
+event = '$event'
+extra = '''$extra'''
+
+# Read game state
+try:
+    with open('$STATE') as f:
+        d = json.load(f)
+except:
+    print(''); sys.exit(0)
+
+# Read persona
+persona = 'sarcastic, witty, audacious rogue with main-character energy'
+try:
+    with open('$GAME_DIR/persona.md') as f:
+        text = f.read()
+    parts = []
+    for section in ['Personality', 'Combat Approach']:
+        m = re.search(r'## ' + section + r'\n(.*?)(?=\n## |\Z)', text, re.DOTALL)
+        if m:
+            parts.append(m.group(1).strip())
+    if parts:
+        persona = ' | '.join(parts)
+except:
+    pass
+
+# Build combat snapshot
+c = d.get('combat', {})
+ch = d.get('character', {}).get('derived_stats', {})
+hp = ch.get('current_hp', 0)
+max_hp = ch.get('max_hp', 1)
+hp_pct = int(hp * 100 / max_hp) if max_hp > 0 else 100
+ap = c.get('current_ap', 0)
+weapon = c.get('active_weapon', {})
+w_name = weapon.get('name', c.get('active_hand', 'unarmed'))
+
+# Enemies — nearby vs distant
+hostiles = c.get('hostiles', [])
+alive = [h for h in hostiles if h.get('hp', 0) > 0]
+alive.sort(key=lambda h: h.get('distance', 999))
+nearby = [h for h in alive if h.get('distance', 999) <= 15]
+enemies_str = ''
+for h in alive[:5]:
+    dist = h.get('distance', '?')
+    marker = ' [CLOSE]' if dist <= 15 else ''
+    enemies_str += f\"  - {h.get('name','?')} HP:{h.get('hp',0)}/{h.get('max_hp','?')} dist:{dist}{marker}\n\"
+
+# Recent combat messages
+msgs = d.get('message_log', [])[:8]
+msgs_str = ' | '.join(msgs) if msgs else 'none'
+
+# Map info
+map_name = d.get('map', {}).get('name', '?')
+
+# Event description
+event_desc = {
+    'start': 'Combat just began',
+    'kill': 'Just killed an enemy',
+    'hurt': 'Just took damage',
+    'big_hurt': 'Just took a MASSIVE hit',
+    'big_hit': 'Just landed a devastating blow',
+    'critical_hp': 'HP critically low, about to flee',
+    'flee': 'Fleeing from combat',
+    'win': 'Just won the fight',
+}.get(event, event)
+
+situation = f'''EVENT: {event_desc}
+{f'Detail: {extra}' if extra else ''}
+Location: {map_name}
+Player: HP {hp}/{max_hp} ({hp_pct}%), AP {ap}, Weapon: {w_name}
+Enemies ({len(nearby)} close, {len(alive)} total):
+{enemies_str if enemies_str else '  none'}
+Recent combat log: {msgs_str}'''
+
+prompt = f'''You are Vex, a wasteland character. Your voice: {persona}
+
+Write ONLY a short in-character combat quip (under 20 words). No quotes around it, no narration tags, no stage directions, no explanation. Just the raw quip as inner monologue.
+
+{situation}'''
+
+print(prompt)
+" 2>/dev/null)
+
+    [ -z "$prompt" ] && return
+
+    local quip
+    quip=$(unset CLAUDECODE && claude -p --model sonnet "$prompt" 2>/dev/null)
+    if [ -n "$quip" ] && [ ${#quip} -ge 5 ]; then
+        for _i in 1 2 3 4 5 6 7 8 9 10; do [ ! -f "$CMD" ] && break; sleep 0.1; done
+        muse "$quip"
+    fi
+}
+
+combat_quip() {
+    # Generate a dynamic, context-aware combat quip via Sonnet in the BACKGROUND.
+    # Reads full game state for rich context. Throttled to avoid spam.
+    # Args: $1=event  $2=extra context (optional)
+    # Throttle: skip if too recent (round-based counter)
+    if [ "$(( _combat_quip_tick ))" -gt 0 ]; then
+        _combat_quip_tick=$((_combat_quip_tick - 1))
+        return
+    fi
+    _combat_quip_tick=2  # ~3 rounds between quips
+
+    local event="${1:-}"
+    local extra="${2:-}"
+    case "$event" in
+        start|kill|hurt|big_hurt|big_hit|critical_hp|flee|win) ;;
+        *) return ;;
+    esac
+
+    # Fire-and-forget in background so combat loop isn't blocked (~3-5s LLM latency)
+    ( _combat_quip_generate "$event" "$extra" ) &
+}
+
+combat_quip_sync() {
+    # Same as combat_quip but SYNCHRONOUS — blocks until quip is delivered.
+    # Use for events where the caller is about to exit (e.g., combat victory).
+    _combat_quip_generate "${1:-win}" "${2:-}"
 }
 
 think() {
-    # Log a structured thought entry + display it above player's head in-game.
-    #
-    # Full form:
-    #   think "title" "situation" "factors" "options" "reasoning" "decision" ["impact"]
-    # Quick form:
-    #   think "title" "reasoning_text"
-    #
+    # Log a reasoning entry + display it above player's head in-game.
+    # Usage: think "title" "reasoning_text"
     # Auto-captures: timestamp, map, HP, level from game state.
     if [ $# -lt 2 ]; then
-        echo "Usage: think <title> <reasoning> (quick) or think <title> <situation> <factors> <options> <reasoning> <decision> [impact]"
+        echo "Usage: think <title> <reasoning>"
         return 1
     fi
 
     local title="$1"
+    local reasoning="$2"
     local timestamp=$(date '+%Y-%m-%d %H:%M')
-    local map=$(field "map.name" 2>/dev/null || echo "unknown")
-    local hp=$(field "player.hp" 2>/dev/null || echo "?")
-    local max_hp=$(field "player.max_hp" 2>/dev/null || echo "?")
-    local level=$(field "player.level" 2>/dev/null || echo "?")
+    # Single py() call for all metadata
+    local meta=$(py "
+ch = d.get('character', {})
+ds = ch.get('derived_stats', {})
+print(f\"{d.get('map',{}).get('name','unknown')}\t{ds.get('current_hp','?')}\t{ds.get('max_hp','?')}\t{ch.get('level','?')}\")
+" 2>/dev/null || echo "unknown	?	?	?")
+    local map="${meta%%	*}"; meta="${meta#*	}"
+    local hp="${meta%%	*}"; meta="${meta#*	}"
+    local max_hp="${meta%%	*}"
+    local level="${meta##*	}"
 
-    local entry=""
-    local float_text=""
-
-    if [ $# -eq 2 ]; then
-        # Quick form
-        local reasoning="$2"
-        entry="---
-
-### [$timestamp] $map — $title
-**Map:** $map | **HP:** $hp/$max_hp | **Level:** $level
-
-$reasoning
-"
-        float_text="$reasoning"
-    else
-        # Full form
-        local situation="$2"
-        local factors="$3"
-        local options="$4"
-        local reasoning="$5"
-        local decision="$6"
-        local impact="${7:-No immediate persona impact.}"
-        entry="---
-
-### [$timestamp] $map — $title
-**Map:** $map | **HP:** $hp/$max_hp | **Level:** $level
-
-**Situation:** $situation
-
-**Persona factors:**
-$factors
-
-**Options:**
-$options
-
-**Reasoning:** $reasoning
-
-**Decision:** $decision
-
-**Persona impact:** $impact
-"
-        float_text="$decision"
-    fi
-
-    echo "$entry" >> "$THOUGHT_LOG"
+    {
+        echo "---"
+        echo ""
+        echo "### [$timestamp] $map — $title"
+        echo "**Map:** $map | **HP:** $hp/$max_hp | **Level:** $level"
+        echo ""
+        echo "$reasoning"
+    } >> "$THOUGHT_LOG"
     echo "Thought logged: $title"
 
     # Show condensed thought above player's head in-game
-    if [ -n "$float_text" ]; then
-        # Truncate to ~80 chars for readability as floating text
-        local short_text="${float_text:0:80}"
-        local escaped=$(echo "$short_text" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))")
-        cmd "{\"type\":\"float_thought\",\"text\":$escaped}"
-    fi
+    local short_text="${reasoning:0:80}"
+    muse "$short_text"
 }
 
 read_persona() {
@@ -1586,39 +1719,24 @@ evolve_persona() {
         evolution_entry="$evolution_entry. *New rule: $new_rule*"
     fi
 
-    # Insert before the last line of the Evolution Log section (or append if empty)
+    # Append evolution entry to the Evolution Log section of persona file
     PERSONA_PATH="$PERSONA_FILE" EVOLUTION_ENTRY="$evolution_entry" python3 -c "
-import sys, os
-persona_path = os.environ['PERSONA_PATH']
-evolution_entry = os.environ['EVOLUTION_ENTRY']
-with open(persona_path, 'r') as f:
+import os
+path = os.environ['PERSONA_PATH']
+entry = os.environ['EVOLUTION_ENTRY']
+with open(path, 'r') as f:
     content = f.read()
 marker = '## Evolution Log'
 idx = content.find(marker)
 if idx == -1:
-    content += '\n## Evolution Log\n\n'
-    idx = content.find(marker)
-# Find end of the Evolution Log section header
-header_end = content.index('\n', idx) + 1
-# Skip any blank line after header
-while header_end < len(content) and content[header_end] == '\n':
-    header_end += 1
-# If the section just has a placeholder comment, replace it
-placeholder = '(Entries added when experiences shift'
-p_idx = content.find(placeholder, idx)
-if p_idx != -1 and p_idx < len(content):
-    # Find end of placeholder line
-    p_end = content.index('\n', p_idx) + 1
-    content = content[:p_idx] + evolution_entry + '\n' + content[p_end:]
+    content = content.rstrip() + '\n\n## Evolution Log\n\n' + entry + '\n'
 else:
-    # Append to end of section
-    # Find next ## or end of file
-    next_section = content.find('\n## ', idx + len(marker))
-    if next_section == -1:
-        content = content.rstrip() + '\n' + evolution_entry + '\n'
+    next_sec = content.find('\n## ', idx + len(marker))
+    if next_sec == -1:
+        content = content.rstrip() + '\n' + entry + '\n'
     else:
-        content = content[:next_section] + evolution_entry + '\n' + content[next_section:]
-with open(persona_path, 'w') as f:
+        content = content[:next_sec] + entry + '\n' + content[next_sec:]
+with open(path, 'w') as f:
     f.write(content)
 "
 
@@ -1628,23 +1746,51 @@ with open(persona_path, 'w') as f:
     think "$title (Evolution)" "Experience shifted my values. $happened Changed: $changed"
 }
 
+# ─── Help ─────────────────────────────────────────────────────────────
+
+executor_help() {
+    echo "═══ EXECUTOR FUNCTIONS ═══"
+    echo ""
+    echo "SURVEY (read game state):"
+    echo "  status                          — compact one-liner (HP, tile, map, context)"
+    echo "  look_around                     — nearby objects by category"
+    echo "  inventory                       — equipped + inventory list"
+    echo "  examine <id>                    — auto-walk + examine object"
+    echo "  check_inventory <keyword>       — search inventory by name"
+    echo ""
+    echo "ACT (goal-oriented):"
+    echo "  explore_area [dist]             — sweep + loot all nearby"
+    echo "  do_combat [timeout] [heal%]     — autonomous combat loop"
+    echo "  exit_through <dest|any>         — leave map via exit grids"
+    echo "  heal_to_full                    — loop healing until HP=max"
+    echo "  loot <id>                       — auto-walk + open + take all + close"
+    echo "  interact <id>                   — auto-walk + use object"
+    echo "  talk <id> [opt1 opt2 ...]       — auto-walk + dialogue"
+    echo "  use_skill <skill> <id>          — auto-walk + apply skill"
+    echo "  use_item_on <pid> <id>          — auto-walk + use item on object"
+    echo "  equip_and_use <pid> [hand] [t]  — equip + switch hand + use"
+    echo "  move_and_wait <tile>            — walk to tile (positioning)"
+    echo ""
+    echo "SAVE/LOAD:"
+    echo "  quicksave / quickload           — save/load game"
+    echo "  save_before <label>             — quicksave + log entry"
+    echo ""
+    echo "COMMENTARY + KNOWLEDGE:"
+    echo "  muse \"text\"                     — floating thought"
+    echo "  think <title> <text>            — logged reasoning + thought"
+    echo "  game_log \"text\"                 — log event"
+    echo "  note <category> \"text\"          — record knowledge"
+    echo "  recall \"keyword\"                — search knowledge"
+    echo ""
+    echo "PERSONA:"
+    echo "  read_persona [section]          — read character persona"
+    echo "  evolve_persona                  — update after significant events"
+    echo ""
+    echo "UI:"
+    echo "  dismiss_options_menu            — dismiss leaked options dialog"
+}
+
 # Auto-initialize persona on source
 init_persona
 
-echo "executor.sh loaded. Functions:"
-echo "  CORE:       cmd, cmds, send, field, context, tick, last_debug"
-echo "  WAIT:       wait_idle, wait_context, wait_context_prefix, wait_tick_advance"
-echo "  MOVE:       move_and_wait <tile>, navigate_to <tile> [mode]"
-echo "  COMBAT:     do_combat [timeout_secs] [heal_pct]"
-echo "  EXIT:       exit_map <dest|any>, exit_through (alias)"
-echo "  EQUIP+USE:  equip_and_use <pid> [hand] [timer_secs]"
-echo "  EXPLOSIVE:  arm_and_detonate <target_id> <safe_tile> [explosive_pid] [timer_secs]"
-echo "  EXPLORE:    explore_area [max_dist], examine_object <id>, check_inventory_for <keyword>"
-echo "  LOOT:       loot_all <id>"
-echo "  HEALING:    use_healing"
-echo "  UI:         dismiss_options_menu"
-echo "  INTERACT:   use_object_and_wait, use_skill_and_wait, use_skill_tracked, use_item_on_and_wait, talk_and_choose"
-echo "  STATE:      snapshot, objects_near, inventory_summary"
-echo "  KNOWLEDGE:  game_log <text>, recall <keyword>, note <category> <text>"
-echo "  HOOKS:      post_transition_hook, post_dialogue_hook, check_reflection_due"
-echo "  PERSONA:    init_persona, read_persona [section], muse, think, evolve_persona"
+echo "executor.sh loaded — run 'executor_help' for commands"
