@@ -3194,7 +3194,9 @@ void processCommands()
         else if (type == "auto_combat") {
             bool enabled = cmd.contains("enabled") && cmd["enabled"].is_boolean()
                 && cmd["enabled"].get<bool>();
-            if (enabled && !gAgentAutoCombat) {
+            if (enabled && gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
+                gAgentLastCommandDebug = "auto_combat: not in gameplay";
+            } else if (enabled && !gAgentAutoCombat) {
                 // Save gDude's original AI packet and assign a dedicated one
                 gAgentOriginalAiPacket = gDude->data.critter.combat.aiPacket;
                 int numPackets = combat_ai_num();

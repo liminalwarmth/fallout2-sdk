@@ -246,18 +246,20 @@ index 76d3ea4..e6ddb9e 100644
      if (cursorWasHidden) {
          mouseShowCursor();
 diff --git a/src/combat.cc b/src/combat.cc
-index 825a573..37d222c 100644
+index 825a573..4b13e1c 100644
 --- a/src/combat.cc
 +++ b/src/combat.cc
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,9 @@
  #include "art.h"
  #include "color.h"
  #include "combat_ai.h"
++#ifdef AGENT_BRIDGE
 +#include "agent_bridge.h"
++#endif
  #include "critter.h"
  #include "db.h"
  #include "debug.h"
-@@ -3226,6 +3227,11 @@ static int _combat_turn(Object* obj, bool a2)
+@@ -3226,6 +3229,11 @@ static int _combat_turn(Object* obj, bool a2)
  {
      _combat_turn_obj = obj;
  
@@ -269,11 +271,11 @@ index 825a573..37d222c 100644
      attackInit(&_main_ctd, obj, nullptr, HIT_MODE_PUNCH, HIT_LOCATION_TORSO);
  
      if ((obj->data.critter.combat.results & (DAM_KNOCKED_OUT | DAM_DEAD | DAM_LOSE_TURN)) != 0) {
-@@ -3282,7 +3288,16 @@ static int _combat_turn(Object* obj, bool a2)
+@@ -3282,7 +3290,20 @@ static int _combat_turn(Object* obj, bool a2)
                      _combat_outline_on();
                  }
  
--                if (_combat_input() == -1) {
++#ifdef AGENT_BRIDGE
 +                if (gAgentAutoCombat) {
 +                    // Engine AI drives player's turn — grant free-move AP
 +                    // so the AI benefits from Bonus Move perk
@@ -284,10 +286,13 @@ index 825a573..37d222c 100644
 +                    _combat_ai(gDude, aiTarget);
 +                    // Falls through to _combat_turn_run() and normal cleanup
 +                } else if (_combat_input() == -1) {
++#else
+                 if (_combat_input() == -1) {
++#endif
                      gameUiDisable(1);
                      gameMouseSetCursor(MOUSE_CURSOR_WAIT_WATCH);
                      obj->data.critter.combat.damageLastTurn = 0;
-@@ -6842,4 +6857,22 @@ Attack* combat_get_data()
+@@ -6842,4 +6863,22 @@ Attack* combat_get_data()
      return &_main_ctd;
  }
  

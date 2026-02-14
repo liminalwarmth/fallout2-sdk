@@ -91,7 +91,7 @@ for k,v in d.items():
     print(f'{k}={shlex.quote(str(v))}')
 ")
         mon_hp=${hp:-0}
-        mon_max_hp=${mon_max_hp:-1}
+        mon_max_hp=${max_hp:-1}
 
         # Track rounds from engine
         if [ "$combat_round" -gt "$round" ]; then

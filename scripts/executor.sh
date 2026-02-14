@@ -173,7 +173,10 @@
 
 set -uo pipefail
 
-GAME_DIR="${FALLOUT2_GAME_DIR:-$(cd "$(dirname "$0")/.." && pwd)/game}"
+# Resolve repo root — works in both bash (BASH_SOURCE) and zsh ($0)
+_executor_src="${BASH_SOURCE[0]:-$0}"
+GAME_DIR="${FALLOUT2_GAME_DIR:-$(cd "$(dirname "$_executor_src")/.." && pwd)/game}"
+unset _executor_src
 STATE="$GAME_DIR/agent_state.json"
 CMD="$GAME_DIR/agent_cmd.json"
 TMP="$GAME_DIR/agent_cmd.tmp"

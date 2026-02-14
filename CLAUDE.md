@@ -83,10 +83,6 @@ CMake 3.13+, C++17 compiler, SDL2 (bundled via `FALLOUT_VENDORED`), nlohmann/jso
 
 ## Codex Collaboration
 
-Use `/run-codex` for cross-model code review and collaboration. Invoke automatically for:
-- **Code reviews**: Run `/run-codex review` before finalizing significant C++ or shell changes
-- **Refactoring**: Run `/run-codex refactor <description>` for a second opinion
-- **Architecture**: Run `/run-codex ask <question>` for design input on non-trivial changes
-
-After receiving Codex output, synthesize with your own analysis. Explicitly note agreements,
-disagreements, and anything one model caught that the other missed.
+Use `/run-codex <prompt>` to get a second opinion from Codex (OpenAI). Good for code review,
+refactoring plans, architecture questions, or any task where cross-model input is valuable.
+Synthesize Codex output with your own analysis — note agreements, disagreements, and blind spots.
