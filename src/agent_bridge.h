@@ -31,6 +31,16 @@ extern int gAgentPendingLoadSlot;
 // Defaults to false. Enable via {"type":"set_test_mode","enabled":true}
 extern bool gAgentTestMode;
 
+// Auto-combat flag — when true, engine runs _combat_ai(gDude, ...) on player's
+// turn instead of waiting for manual input via _combat_input().
+// Enable via {"type":"auto_combat","enabled":true}
+extern bool gAgentAutoCombat;
+
+// Death screen flag — set while showDeath() is active so bridge can detect it.
+// During death screen, mainLoop() has already exited and game state is reset,
+// so normal HP/context reads are stale. The bridge emits "death_screen" context.
+extern bool gAgentDeathScreenActive;
+
 // Re-draw the dialogue thought overlay (call from dialogue render loops
 // to keep overlay on top of talking heads and window refreshes)
 void agentRedrawDialogueOverlay();

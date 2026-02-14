@@ -43,6 +43,9 @@ const char* itemTypeToString(int type);
 const char* sceneryTypeToString(int type);
 std::string safeString(const char* str);
 
+// --- Auto-combat AI packet tracking ---
+extern int gAgentOriginalAiPacket; // saved AI packet number when auto-combat enabled
+
 // --- Explosive timer bypass ---
 extern int gAgentPendingExplosiveTimer;
 

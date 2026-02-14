@@ -1,0 +1,39 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/float_response.sh\"",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/float_response.sh\"",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "GAME_DIR=\"${CLAUDE_PROJECT_DIR}/game\"; CMD=\"$GAME_DIR/agent_cmd.json\"; TMP=\"$GAME_DIR/agent_cmd.tmp\"; [ -f \"$GAME_DIR/agent_state.json\" ] && echo '{\"commands\":[{\"type\":\"set_status\",\"text\":\"Compacting context\"}]}' > \"$TMP\" && mv \"$TMP\" \"$CMD\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

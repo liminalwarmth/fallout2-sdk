@@ -143,21 +143,22 @@ fi
 BLOCK_COUNT=$(wc -l < "$TEXTS_FILE" 2>/dev/null | tr -d ' ')
 _hook_log "{\"ts\":$(_hook_ts),\"event\":\"hook\",\"hook_event\":\"$HOOK_EVENT\",\"context\":\"$CONTEXT\",\"blocks_sent\":$BLOCK_COUNT}"
 
-# Send each text block as a separate float_thought command
+# Send each text block as a separate float_thought command.
+# IMPORTANT: Skip if a game command is already pending — never overwrite gameplay commands.
 while IFS= read -r cmd_json; do
     [ -z "$cmd_json" ] && continue
 
-    # Wait for any pending command to be consumed (up to 500ms)
-    for i in 1 2 3 4 5; do
-        [ ! -f "$CMD" ] && break
-        sleep 0.1
-    done
+    # If a command file exists, skip this thought rather than racing with game commands
+    if [ -f "$CMD" ]; then
+        _hook_log "{\"ts\":$(_hook_ts),\"event\":\"hook_skip_race\",\"reason\":\"cmd_pending\"}"
+        continue
+    fi
 
     # Write command via atomic tmp+mv
     echo "$cmd_json" > "$TMP" && mv "$TMP" "$CMD"
 
-    # Brief pause so engine can consume before next one
-    sleep 0.2
+    # Pause for engine to consume before next one
+    sleep 0.3
 done < "$TEXTS_FILE"
 
 rm -f "$TEXTS_FILE"

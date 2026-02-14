@@ -208,20 +208,46 @@ _dbg_end() {
     _dbg "{\"ts\":$_now,\"event\":\"action_end\",\"fn\":\"$1\",\"result\":\"$(_dbg_san "$2")\",\"duration_ms\":$(( _now - ${3:-0} ))}"
 }
 
+# ─── Process Liveness ────────────────────────────────────────────────
+
+_game_pid() {
+    pgrep -f "Fallout II Community Edition" 2>/dev/null | head -1
+}
+
+_require_game() {
+    if ! _game_pid >/dev/null; then
+        echo "ERROR: Game is not running. Launch it first." >&2
+        return 1
+    fi
+}
+
+game_running() {
+    local pid=$(_game_pid)
+    if [[ -n "$pid" ]]; then
+        echo "Game running (PID $pid)"
+        return 0
+    else
+        echo "Game is NOT running"
+        return 1
+    fi
+}
+
 # ─── Core I/O ─────────────────────────────────────────────────────────
 
 send() {
+    _require_game || return 1
     echo "$1" > "$TMP" && mv "$TMP" "$CMD"
 }
 
 cmd() {
-    send "{\"commands\":[$1]}"
+    send "{\"commands\":[$1]}" || return 1
     local _type="?"
     [[ "$1" =~ '"type":"([^"]+)"' ]] && _type="${match[1]}"
     _dbg "{\"ts\":$(_dbg_ts),\"event\":\"cmd_sent\",\"caller\":\"${funcstack[2]:-direct}\",\"type\":\"$_type\"}"
 }
 
 py() {
+    _require_game || return 1
     python3 -c "
 import json
 with open('$STATE') as f:
@@ -421,8 +447,11 @@ print(f\"HP:{hp}/{max_hp} Lv:{lvl} Tile:{tile} {m.get('name','?')} {ctx} [{obj_s
 }
 
 look_around() {
-    # Print objects near player for strategic planning.
-    # Falls back to approximate hex distance when engine distance is null.
+    # Print actionable objects near player, distance-capped and deduped.
+    # Usage: look_around [max_dist]   (default: 25 tiles ≈ 1-2 screens)
+    # Shows: all critters, doors, containers w/items, ground items, exits (1 per dest).
+    # Skips: generic scenery (goo, rocks, walls) and empty containers.
+    local max_dist="${1:-25}"
     py "
 import json
 objs = d.get('objects', {})
@@ -431,9 +460,10 @@ scenery = objs.get('scenery', [])
 exits = objs.get('exit_grids', [])
 ground = objs.get('ground_items', [])
 ptile = d.get('player', {}).get('tile', 0)
+MAX_DIST = $max_dist
 
 def approx_dist(tile):
-    if not tile or not ptile: return '?'
+    if not tile or not ptile: return 999
     r1, c1 = divmod(ptile, 200)
     r2, c2 = divmod(tile, 200)
     return max(abs(r1 - r2), abs(c1 - c2))
@@ -442,39 +472,67 @@ def get_dist(obj):
     dist = obj.get('distance')
     if dist is None:
         dist = approx_dist(obj.get('tile', 0))
-    return dist
+    return dist if isinstance(dist, (int, float)) else 999
 
-def sort_key(obj):
-    dist_val = obj.get('distance')
-    if dist_val is None:
-        dist_val = approx_dist(obj.get('tile', 0))
-    return dist_val if isinstance(dist_val, (int, float)) else 999
+def nearby(lst):
+    return sorted([o for o in lst if get_dist(o) <= MAX_DIST], key=get_dist)
 
-if critters:
+nc = nearby(critters)
+if nc:
     print('CRITTERS:')
-    for c in sorted(critters, key=sort_key):
+    for c in nc:
         hp_str = f\"hp={c.get('hp')}/{c.get('max_hp')}\" if 'hp' in c else ''
-        print(f\"  {c.get('name','?')} id={c.get('id')} tile={c.get('tile')} dist={get_dist(c)} {hp_str} team={c.get('team',0)}\")
+        dead = ' DEAD' if c.get('dead') else ''
+        print(f\"  {c.get('name','?')} id={c.get('id')} tile={c.get('tile')} dist={get_dist(c)} {hp_str} team={c.get('team',0)}{dead}\")
 
-if scenery:
+# Scenery: only doors and containers with items
+actionable = [s for s in scenery if s.get('scenery_type') == 'door' or s.get('item_count', 0) > 0]
+ns = nearby(actionable)
+if ns:
     print('SCENERY:')
-    for s in sorted(scenery, key=sort_key):
+    for s in ns:
         extra = ''
         if s.get('scenery_type') == 'door':
             extra = f\" open={s.get('open')} locked={s.get('locked')}\"
-        elif s.get('item_count', 0) > 0:
-            extra = f\" items={s.get('item_count')}\"
+        if s.get('item_count', 0) > 0:
+            extra += f\" items={s.get('item_count')}\"
         print(f\"  {s.get('name','?')} id={s.get('id')} tile={s.get('tile')} dist={get_dist(s)} type={s.get('scenery_type','?')}{extra}\")
 
-if exits:
-    print('EXIT GRIDS:')
-    for e in sorted(exits, key=sort_key):
-        print(f\"  tile={e.get('tile')} dist={get_dist(e)} -> {e.get('destination_map_name','?')} (map={e.get('destination_map')}, elev={e.get('destination_elevation')})\")
+# Exits: deduplicate by destination, keep closest
+seen_dests = {}
+for e in sorted(exits, key=get_dist):
+    dest = e.get('destination_map_name', '?')
+    if dest not in seen_dests:
+        seen_dests[dest] = e
+ne = [e for e in seen_dests.values() if get_dist(e) <= MAX_DIST]
+if ne:
+    print('EXITS:')
+    for e in sorted(ne, key=get_dist):
+        print(f\"  {e.get('destination_map_name','?')} tile={e.get('tile')} dist={get_dist(e)} (map={e.get('destination_map')})\")
+# Always show exits beyond range as a summary
+far_exits = [e for e in seen_dests.values() if get_dist(e) > MAX_DIST]
+if far_exits:
+    names = ', '.join(sorted(set(e.get('destination_map_name','?') for e in far_exits)))
+    print(f'  (farther: {names})')
 
-if ground:
+ng = nearby(ground)
+if ng:
     print('GROUND ITEMS:')
-    for g in sorted(ground, key=sort_key):
-        print(f\"  {g.get('name','?')} id={g.get('id')} tile={g.get('tile')} dist={get_dist(g)} pid={g.get('pid')}\")
+    for g in ng:
+        cnt = f' x{g[\"item_count\"]}' if g.get('item_count', 1) > 1 else ''
+        ct = f' [{g[\"type\"]}]' if g.get('type') == 'container' else ''
+        print(f\"  {g.get('name','?')}{cnt}{ct} id={g.get('id')} tile={g.get('tile')} dist={get_dist(g)} pid={g.get('pid')}\")
+
+# Summary of what's beyond range
+total_c = len(critters) - len(nc)
+total_s = len(actionable) - len(ns)
+total_g = len(ground) - len(ng)
+beyond = []
+if total_c > 0: beyond.append(f'{total_c} critters')
+if total_s > 0: beyond.append(f'{total_s} scenery')
+if total_g > 0: beyond.append(f'{total_g} ground items')
+if beyond:
+    print(f'(Beyond {MAX_DIST} tiles: {chr(44).join(beyond)} — use look_around <dist> to expand)')
 "
 }
 
@@ -767,7 +825,7 @@ executor_help() {
     echo ""
     echo "ACT (goal-oriented):"
     echo "  explore_area [dist]             — sweep + loot all nearby"
-    echo "  do_combat [timeout] [heal%]     — autonomous combat loop"
+    echo "  do_combat [timeout] [crit%]     — auto-combat (engine AI, monitor loop)"
     echo "  exit_through <dest|any>         — leave map via exit grids"
     echo "  heal_to_full                    — loop healing until HP=max"
     echo "  heal_companion <id> [pid]       — use healing item on companion/NPC"
@@ -817,7 +875,13 @@ executor_help() {
 
 # ─── Source sub-modules ──────────────────────────────────────────────
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve script dir — works in both bash and zsh
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    # zsh: $0 is the sourced script path
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
 source "$SCRIPT_DIR/executor_world.sh"
 source "$SCRIPT_DIR/executor_combat.sh"
 source "$SCRIPT_DIR/executor_dialogue.sh"

@@ -38,6 +38,9 @@ int gAgentContext = AGENT_CONTEXT_UNKNOWN;
 int gAgentMainMenuAction = 0;
 int gAgentPendingLoadSlot = -1;
 bool gAgentTestMode = false;
+bool gAgentAutoCombat = false;
+int gAgentOriginalAiPacket = -1; // saved AI packet number for gDude when auto-combat enabled
+bool gAgentDeathScreenActive = false;
 int gAgentPendingExplosiveTimer = 0;
 int gAgentPendingDialogueSelect = -1;
 unsigned int gAgentDialogueSelectTick = 0;
@@ -326,6 +329,11 @@ Object* findObjectByUniqueId(uintptr_t uid)
 
 const char* detectContext()
 {
+    // Priority 0: Death screen (game state is reset, reads are stale)
+    if (gAgentDeathScreenActive) {
+        return "death_screen";
+    }
+
     // Priority 1: Movie playback
     if (gameMovieIsPlaying()) {
         return "movie";
@@ -366,7 +374,7 @@ const char* detectContext()
         }
         if (isInCombat()) {
             if (gameMode & GameMode::kPlayerTurn)
-                return "gameplay_combat";
+                return gAgentAutoCombat ? "gameplay_combat_auto" : "gameplay_combat";
             return "gameplay_combat_wait";
         }
         return "gameplay_exploration";

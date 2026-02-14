@@ -23,6 +23,8 @@
 #include "display_monitor.h"
 #include "animation.h"
 #include "combat.h"
+#include "combat_ai.h"
+#include "combat_ai_defs.h"
 #include "combat_defs.h"
 #include "game_dialog.h"
 #include "interface.h"
@@ -1319,6 +1321,27 @@ static void writeCombatState(json& state)
     }
     combat["combat_round"] = _combatNumTurns;
 
+    // Auto-combat state
+    combat["auto_combat"] = gAgentAutoCombat;
+    if (gAgentAutoCombat) {
+        json aiConfig;
+        int aw = aiGetAttackWho(gDude);
+        int dm = aiGetDistance(gDude);
+        int bw = aiGetBestWeapon(gDude);
+        int cu = aiGetChemUse(gDude);
+        int ra = aiGetRunAwayMode(gDude);
+        int aa = aiGetAreaAttackMode(gDude);
+        int dp = aiGetDisposition(gDude);
+        aiConfig["attack_who"] = (aw >= 0 && aw < ATTACK_WHO_COUNT) ? gAttackWhoKeys[aw] : "unknown";
+        aiConfig["distance"] = (dm >= 0 && dm < DISTANCE_COUNT) ? gDistanceModeKeys[dm] : "unknown";
+        aiConfig["best_weapon"] = (bw >= 0 && bw < BEST_WEAPON_COUNT) ? gBestWeaponKeys[bw] : "unknown";
+        aiConfig["chem_use"] = (cu >= 0 && cu < CHEM_USE_COUNT) ? gChemUseKeys[cu] : "unknown";
+        aiConfig["run_away_mode"] = (ra >= 0 && ra < RUN_AWAY_MODE_COUNT) ? gRunAwayModeKeys[ra] : "unknown";
+        aiConfig["area_attack_mode"] = (aa >= 0 && aa < AREA_ATTACK_MODE_COUNT) ? gAreaAttackModeKeys[aa] : "unknown";
+        aiConfig["disposition"] = (dp >= 0 && dp < DISPOSITION_COUNT) ? gDispositionKeys[dp] : "unknown";
+        combat["ai_config"] = aiConfig;
+    }
+
     state["combat"] = combat;
 }
 
@@ -1819,7 +1842,8 @@ static void writeGameplayState(json& state, const char* context)
     }
 
     // Context-specific additions
-    if (strcmp(context, "gameplay_combat") == 0) {
+    if (strcmp(context, "gameplay_combat") == 0
+        || strcmp(context, "gameplay_combat_auto") == 0) {
         writeCombatState(state);
     } else if (strcmp(context, "gameplay_dialogue") == 0) {
         writeDialogueState(state);
@@ -1886,6 +1910,7 @@ void writeState()
     state["game_mode_flags"] = decodeGameModeFlags(gameMode);
     state["game_state"] = gameGetState();
     state["test_mode"] = gAgentTestMode;
+    state["auto_combat"] = gAgentAutoCombat;
     if (!gAgentSessionId.empty())
         state["session_id"] = gAgentSessionId;
     state["mouse"] = { { "x", mouseX }, { "y", mouseY } };
@@ -1933,7 +1958,10 @@ void writeState()
         }
     }
 
-    if (strcmp(context, "movie") == 0) {
+    if (strcmp(context, "death_screen") == 0) {
+        state["player_dead"] = true;
+        // Don't write gameplay state — game has been unloaded, reads would be stale
+    } else if (strcmp(context, "movie") == 0) {
         writeMovieState(state);
     } else if (strcmp(context, "main_menu") == 0) {
         writeMainMenuState(state);

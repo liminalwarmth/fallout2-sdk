@@ -24,6 +24,8 @@
 #include "animation.h"
 #include "art.h"
 #include "combat.h"
+#include "combat_ai.h"
+#include "combat_ai_defs.h"
 #include "combat_defs.h"
 #include "game_dialog.h"
 #include "interface.h"
@@ -1508,7 +1510,9 @@ static void handleAttack(const json& cmd)
     }
 
     if (!isInCombat()) {
-        gAgentLastCommandDebug = "attack: not in combat";
+        // Auto-enter combat if not already in combat
+        enqueueInputEvent('a');
+        gAgentLastCommandDebug = "attack: entering combat first (send attack again next tick)";
         return;
     }
 
@@ -3158,6 +3162,8 @@ void processCommands()
                     } else {
                         // Normal gameplay: tile-based text object above player
                         agentHideDialogueOverlay();
+                        // Remove previous text objects to prevent ghost text trailing behind on movement
+                        textObjectsRemoveByOwner(gDude);
                         Rect rect;
                         char* buf = strdup(text.c_str());
                         if (textObjectAdd(gDude, buf, 101, _colorTable[28106], _colorTable[0], &rect) == 0) {
@@ -3183,6 +3189,121 @@ void processCommands()
         else if (type == "clear_status") {
             agentHideStatusOverlay();
             gAgentLastCommandDebug = "clear_status";
+        }
+        // Auto-combat: engine AI drives player's combat turns
+        else if (type == "auto_combat") {
+            bool enabled = cmd.contains("enabled") && cmd["enabled"].is_boolean()
+                && cmd["enabled"].get<bool>();
+            if (enabled && !gAgentAutoCombat) {
+                // Save gDude's original AI packet and assign a dedicated one
+                gAgentOriginalAiPacket = gDude->data.critter.combat.aiPacket;
+                int numPackets = combat_ai_num();
+                int dedicatedPacket = numPackets > 1 ? numPackets - 1 : 0;
+                gDude->data.critter.combat.aiPacket = dedicatedPacket;
+
+                // Configure defaults: aggressive player-like behavior
+                aiSetAttackWho(gDude, ATTACK_WHO_STRONGEST);
+                aiSetDistance(gDude, DISTANCE_CHARGE);
+                aiSetBestWeapon(gDude, BEST_WEAPON_NO_PREF);
+                aiSetChemUse(gDude, CHEM_USE_STIMS_WHEN_HURT_LOTS);
+                aiSetRunAwayMode(gDude, RUN_AWAY_MODE_NEVER);
+                aiSetAreaAttackMode(gDude, AREA_ATTACK_MODE_BE_CAREFUL);
+                aiSetDisposition(gDude, DISPOSITION_AGGRESSIVE);
+
+                gAgentAutoCombat = true;
+                gAgentLastCommandDebug = "auto_combat: ON (packet=" + std::to_string(dedicatedPacket) + ")";
+                debugPrint("AgentBridge: auto_combat ON (packet=%d, total=%d)\n", dedicatedPacket, numPackets);
+            } else if (!enabled && gAgentAutoCombat) {
+                gAgentAutoCombat = false;
+                // Restore original AI packet
+                if (gAgentOriginalAiPacket >= 0) {
+                    gDude->data.critter.combat.aiPacket = gAgentOriginalAiPacket;
+                    gAgentOriginalAiPacket = -1;
+                }
+                gAgentLastCommandDebug = "auto_combat: OFF";
+                debugPrint("AgentBridge: auto_combat OFF\n");
+            } else {
+                gAgentLastCommandDebug = std::string("auto_combat: already ") + (enabled ? "ON" : "OFF");
+            }
+        }
+        else if (type == "configure_combat_ai") {
+            if (!gAgentAutoCombat) {
+                gAgentLastCommandDebug = "configure_combat_ai: auto_combat not enabled";
+            } else {
+                std::string configResult = "configure_combat_ai:";
+                if (cmd.contains("attack_who") && cmd["attack_who"].is_string()) {
+                    std::string val = cmd["attack_who"].get<std::string>();
+                    for (int i = 0; i < ATTACK_WHO_COUNT; i++) {
+                        if (val == gAttackWhoKeys[i]) {
+                            aiSetAttackWho(gDude, i);
+                            configResult += " attack_who=" + val;
+                            break;
+                        }
+                    }
+                }
+                if (cmd.contains("distance") && cmd["distance"].is_string()) {
+                    std::string val = cmd["distance"].get<std::string>();
+                    for (int i = 0; i < DISTANCE_COUNT; i++) {
+                        if (val == gDistanceModeKeys[i]) {
+                            aiSetDistance(gDude, i);
+                            configResult += " distance=" + val;
+                            break;
+                        }
+                    }
+                }
+                if (cmd.contains("best_weapon") && cmd["best_weapon"].is_string()) {
+                    std::string val = cmd["best_weapon"].get<std::string>();
+                    for (int i = 0; i < BEST_WEAPON_COUNT; i++) {
+                        if (val == gBestWeaponKeys[i]) {
+                            aiSetBestWeapon(gDude, i);
+                            configResult += " best_weapon=" + val;
+                            break;
+                        }
+                    }
+                }
+                if (cmd.contains("chem_use") && cmd["chem_use"].is_string()) {
+                    std::string val = cmd["chem_use"].get<std::string>();
+                    for (int i = 0; i < CHEM_USE_COUNT; i++) {
+                        if (val == gChemUseKeys[i]) {
+                            aiSetChemUse(gDude, i);
+                            configResult += " chem_use=" + val;
+                            break;
+                        }
+                    }
+                }
+                if (cmd.contains("run_away_mode") && cmd["run_away_mode"].is_string()) {
+                    std::string val = cmd["run_away_mode"].get<std::string>();
+                    for (int i = 0; i < RUN_AWAY_MODE_COUNT; i++) {
+                        if (val == gRunAwayModeKeys[i]) {
+                            aiSetRunAwayMode(gDude, i);
+                            configResult += " run_away_mode=" + val;
+                            break;
+                        }
+                    }
+                }
+                if (cmd.contains("area_attack_mode") && cmd["area_attack_mode"].is_string()) {
+                    std::string val = cmd["area_attack_mode"].get<std::string>();
+                    for (int i = 0; i < AREA_ATTACK_MODE_COUNT; i++) {
+                        if (val == gAreaAttackModeKeys[i]) {
+                            aiSetAreaAttackMode(gDude, i);
+                            configResult += " area_attack_mode=" + val;
+                            break;
+                        }
+                    }
+                }
+                if (cmd.contains("disposition") && cmd["disposition"].is_string()) {
+                    std::string val = cmd["disposition"].get<std::string>();
+                    for (int i = 0; i < DISPOSITION_COUNT; i++) {
+                        if (val == gDispositionKeys[i]) {
+                            aiSetDisposition(gDude, i);
+                            configResult += " disposition=" + val;
+                            break;
+                        }
+                    }
+                }
+                gAgentLastCommandDebug = configResult;
+                debugPrint("AgentBridge: %s\n", configResult.c_str());
+            }
         }
         // Test mode toggle
         else if (type == "set_test_mode") {

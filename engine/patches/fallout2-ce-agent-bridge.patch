@@ -246,10 +246,18 @@ index 76d3ea4..e6ddb9e 100644
      if (cursorWasHidden) {
          mouseShowCursor();
 diff --git a/src/combat.cc b/src/combat.cc
-index 825a573..c0d2d17 100644
+index 825a573..37d222c 100644
 --- a/src/combat.cc
 +++ b/src/combat.cc
-@@ -3226,6 +3226,11 @@ static int _combat_turn(Object* obj, bool a2)
+@@ -9,6 +9,7 @@
+ #include "art.h"
+ #include "color.h"
+ #include "combat_ai.h"
++#include "agent_bridge.h"
+ #include "critter.h"
+ #include "db.h"
+ #include "debug.h"
+@@ -3226,6 +3227,11 @@ static int _combat_turn(Object* obj, bool a2)
  {
      _combat_turn_obj = obj;
  
@@ -261,7 +269,25 @@ index 825a573..c0d2d17 100644
      attackInit(&_main_ctd, obj, nullptr, HIT_MODE_PUNCH, HIT_LOCATION_TORSO);
  
      if ((obj->data.critter.combat.results & (DAM_KNOCKED_OUT | DAM_DEAD | DAM_LOSE_TURN)) != 0) {
-@@ -6842,4 +6847,22 @@ Attack* combat_get_data()
+@@ -3282,7 +3288,16 @@ static int _combat_turn(Object* obj, bool a2)
+                     _combat_outline_on();
+                 }
+ 
+-                if (_combat_input() == -1) {
++                if (gAgentAutoCombat) {
++                    // Engine AI drives player's turn — grant free-move AP
++                    // so the AI benefits from Bonus Move perk
++                    gDude->data.critter.combat.ap += _combat_free_move;
++                    _combat_free_move = 0;
++
++                    Object* aiTarget = _gcsd != nullptr ? _gcsd->defender : nullptr;
++                    _combat_ai(gDude, aiTarget);
++                    // Falls through to _combat_turn_run() and normal cleanup
++                } else if (_combat_input() == -1) {
+                     gameUiDisable(1);
+                     gameMouseSetCursor(MOUSE_CURSOR_WAIT_WATCH);
+                     obj->data.critter.combat.damageLastTurn = 0;
+@@ -6842,4 +6857,22 @@ Attack* combat_get_data()
      return &_main_ctd;
  }
  
@@ -834,7 +860,7 @@ index 567548e..49835c3 100644
  
  #endif /* LOAD_SAVE_GAME_H */
 diff --git a/src/main.cc b/src/main.cc
-index ee67a0a..23d481c 100644
+index ee67a0a..bc46d11 100644
 --- a/src/main.cc
 +++ b/src/main.cc
 @@ -3,6 +3,10 @@
@@ -858,7 +884,21 @@ index ee67a0a..23d481c 100644
                      mainLoop();
                      paletteFadeTo(gPaletteWhite);
  
-@@ -158,12 +165,27 @@ int falloutMain(int argc, char** argv)
+@@ -139,7 +146,13 @@ int falloutMain(int argc, char** argv)
+                     main_reset_system();
+ 
+                     if (_main_show_death_scene != 0) {
++#ifdef AGENT_BRIDGE
++                        gAgentDeathScreenActive = true;
++#endif
+                         showDeath();
++#ifdef AGENT_BRIDGE
++                        gAgentDeathScreenActive = false;
++#endif
+                         _main_show_death_scene = 0;
+                     }
+                 }
+@@ -158,12 +171,27 @@ int falloutMain(int argc, char** argv)
  
                      colorPaletteLoad("color.pal");
                      paletteFadeTo(_cmap);
@@ -887,6 +927,20 @@ index ee67a0a..23d481c 100644
                          mainLoop();
                      }
                      paletteFadeTo(gPaletteWhite);
+@@ -178,7 +206,13 @@ int falloutMain(int argc, char** argv)
+                     main_reset_system();
+ 
+                     if (_main_show_death_scene != 0) {
++#ifdef AGENT_BRIDGE
++                        gAgentDeathScreenActive = true;
++#endif
+                         showDeath();
++#ifdef AGENT_BRIDGE
++                        gAgentDeathScreenActive = false;
++#endif
+                         _main_show_death_scene = 0;
+                     }
+                     mainMenuWindowInit();
 diff --git a/src/mainmenu.cc b/src/mainmenu.cc
 index bc0bf0a..4e4e67e 100644
 --- a/src/mainmenu.cc
