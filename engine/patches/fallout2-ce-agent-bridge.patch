@@ -354,6 +354,32 @@ index 5d7dd0f..61fee3a 100644
  
      Object* ammo = nullptr;
      for (int attempt = 0; attempt < 10; attempt++) {
+diff --git a/src/dinput.cc b/src/dinput.cc
+index 171d529..9a91a50 100644
+--- a/src/dinput.cc
++++ b/src/dinput.cc
+@@ -54,8 +54,19 @@ bool mouseDeviceGetData(MouseData* mouseState)
+     SDL_PumpEvents();
+ 
+     Uint32 buttons = SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y));
+-    mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+-    mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
++
++    bool leftDown = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
++    bool rightDown = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
++
++    // macOS: Control+Click → right-click (SDL relative mode bypasses Cocoa translation)
++    const Uint8* keystate = SDL_GetKeyboardState(NULL);
++    if (leftDown && !rightDown && (keystate[SDL_SCANCODE_LCTRL] || keystate[SDL_SCANCODE_RCTRL])) {
++        leftDown = false;
++        rightDown = true;
++    }
++
++    mouseState->buttons[0] = leftDown;
++    mouseState->buttons[1] = rightDown;
+     mouseState->wheelX = gMouseWheelDeltaX;
+     mouseState->wheelY = gMouseWheelDeltaY;
+ 
 diff --git a/src/display_monitor.cc b/src/display_monitor.cc
 index 977c029..2ec610b 100644
 --- a/src/display_monitor.cc
