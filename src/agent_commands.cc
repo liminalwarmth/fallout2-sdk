@@ -54,6 +54,7 @@ namespace fallout {
 std::string gAgentLastCommandDebug;
 std::string gAgentLookAtResult;
 std::map<std::string, int> gCommandFailureCounts;
+json gAgentQueryResult;
 
 // --- Dialogue thought overlay (direct screen blit, no window) ---
 // Bottom edge flush with the NPC reply window top (Y=225 in game_dialog.cc)
@@ -376,6 +377,45 @@ static const char* safeName(Object* obj)
         return "(null)";
     char* name = objectGetName(obj);
     return name ? name : "(unnamed)";
+}
+
+// Sanitize C string to valid UTF-8 for JSON fields (same behavior as state writer).
+static std::string safeJsonString(const char* str)
+{
+    if (str == nullptr)
+        return "";
+
+    std::string result;
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(str);
+    while (*p) {
+        if (*p < 0x80) {
+            if (*p >= 0x20 || *p == '\n' || *p == '\t') {
+                result += static_cast<char>(*p);
+            } else {
+                result += '?';
+            }
+            p++;
+        } else if ((*p & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+            result += static_cast<char>(p[0]);
+            result += static_cast<char>(p[1]);
+            p += 2;
+        } else if ((*p & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+            result += static_cast<char>(p[0]);
+            result += static_cast<char>(p[1]);
+            result += static_cast<char>(p[2]);
+            p += 3;
+        } else if ((*p & 0xF8) == 0xF0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+            result += static_cast<char>(p[0]);
+            result += static_cast<char>(p[1]);
+            result += static_cast<char>(p[2]);
+            result += static_cast<char>(p[3]);
+            p += 4;
+        } else {
+            result += '?';
+            p++;
+        }
+    }
+    return result;
 }
 
 // --- Look-at capture callback ---
@@ -1677,6 +1717,7 @@ static void handleFindPath(const json& cmd)
 {
     if (!cmd.contains("to") || !cmd["to"].is_number_integer()) {
         gAgentLastCommandDebug = "find_path: missing 'to' tile";
+        gAgentQueryResult = json::object({ { "type", "find_path" }, { "error", "missing 'to' tile" } });
         return;
     }
 
@@ -1685,6 +1726,10 @@ static void handleFindPath(const json& cmd)
         from = cmd["from"].get<int>();
     }
     int to = cmd["to"].get<int>();
+    json query = json::object();
+    query["type"] = "find_path";
+    query["from"] = from;
+    query["to"] = to;
 
     unsigned char rotations[2000];
     int pathLen = _make_path(gDude, from, to, rotations, 0);
@@ -1693,6 +1738,10 @@ static void handleFindPath(const json& cmd)
         char buf[128];
         snprintf(buf, sizeof(buf), "find_path: no path from %d to %d (len=0)", from, to);
         gAgentLastCommandDebug = buf;
+        query["path_exists"] = false;
+        query["path_length"] = 0;
+        query["waypoints"] = json::array();
+        gAgentQueryResult = query;
         return;
     }
 
@@ -1700,6 +1749,7 @@ static void handleFindPath(const json& cmd)
     // Each waypoint is reachable from the previous in a single move_to/run_to call
     // (engine per-move pathfinder handles ~20 tiles).
     std::string waypoints = "[";
+    json waypointList = json::array();
     int currentTile = from;
     int waypointSpacing = 15; // tiles between waypoints
     int lastWaypointIdx = 0;
@@ -1709,10 +1759,16 @@ static void handleFindPath(const json& cmd)
         if ((i - lastWaypointIdx >= waypointSpacing) || i == pathLen - 1) {
             if (waypoints.length() > 1) waypoints += ",";
             waypoints += std::to_string(currentTile);
+            waypointList.push_back(currentTile);
             lastWaypointIdx = i;
         }
     }
     waypoints += "]";
+
+    query["path_exists"] = true;
+    query["path_length"] = pathLen;
+    query["waypoints"] = waypointList;
+    gAgentQueryResult = query;
 
     char buf[256];
     snprintf(buf, sizeof(buf), "find_path: %d -> %d len=%d waypoints=", from, to, pathLen);
@@ -1724,6 +1780,7 @@ static void handleTileObjects(const json& cmd)
 {
     if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
         gAgentLastCommandDebug = "tile_objects: missing 'tile'";
+        gAgentQueryResult = json::object({ { "type", "tile_objects" }, { "error", "missing 'tile'" } });
         return;
     }
 
@@ -1734,6 +1791,11 @@ static void handleTileObjects(const json& cmd)
     }
 
     std::string result = "tile_objects at " + std::to_string(targetTile) + ": ";
+    json query = json::object();
+    query["type"] = "tile_objects";
+    query["tile"] = targetTile;
+    query["radius"] = radius;
+    json objects = json::array();
 
     // Check all object types
     static const int objTypes[] = { OBJ_TYPE_CRITTER, OBJ_TYPE_SCENERY, OBJ_TYPE_WALL, OBJ_TYPE_TILE, OBJ_TYPE_MISC, OBJ_TYPE_ITEM };
@@ -1753,11 +1815,23 @@ static void handleTileObjects(const json& cmd)
             snprintf(buf, sizeof(buf), "[%s pid=%d tile=%d dist=%d name=%s] ",
                 typeNames[t], obj->pid, obj->tile, dist, name ? name : "?");
             result += buf;
+
+            json entry;
+            entry["id"] = objectToUniqueId(obj);
+            entry["type"] = typeNames[t];
+            entry["pid"] = obj->pid;
+            entry["tile"] = obj->tile;
+            entry["distance"] = dist;
+            entry["name"] = safeJsonString(name);
+            objects.push_back(entry);
         }
         if (list != nullptr) {
             objectListFree(list);
         }
     }
+
+    query["objects"] = objects;
+    gAgentQueryResult = query;
 
     gAgentLastCommandDebug = result;
     debugPrint("AgentBridge: %s\n", result.c_str());
@@ -1769,11 +1843,16 @@ static void handleFindItem(const json& cmd)
 {
     if (!cmd.contains("pid") || !cmd["pid"].is_number_integer()) {
         gAgentLastCommandDebug = "find_item: missing 'pid'";
+        gAgentQueryResult = json::object({ { "type", "find_item" }, { "error", "missing 'pid'" } });
         return;
     }
     int targetPid = cmd["pid"].get<int>();
     std::string result = "find_item pid=" + std::to_string(targetPid) + ": ";
     int found = 0;
+    json query = json::object();
+    query["type"] = "find_item";
+    query["pid"] = targetPid;
+    json matches = json::array();
 
     // Search ground items AND inside ground item containers (pots, chests)
     {
@@ -1789,6 +1868,15 @@ static void handleFindItem(const json& cmd)
                 snprintf(buf, sizeof(buf), "[ground tile=%d dist=%d name=%s] ", obj->tile, dist, name ? name : "?");
                 result += buf;
                 found++;
+
+                json match;
+                match["location"] = "ground";
+                match["tile"] = obj->tile;
+                match["distance"] = dist;
+                match["name"] = safeJsonString(name);
+                match["object_id"] = objectToUniqueId(obj);
+                match["quantity"] = 1;
+                matches.push_back(match);
             }
             // Also check inventory of ground item containers (pots, chests, etc.)
             Inventory* inv = &obj->data.inventory;
@@ -1801,6 +1889,15 @@ static void handleFindItem(const json& cmd)
                         obj->tile, dist, cname ? cname : "?", inv->items[j].quantity);
                     result += buf;
                     found++;
+
+                    json match;
+                    match["location"] = "ground_container";
+                    match["container_id"] = objectToUniqueId(obj);
+                    match["container_name"] = safeJsonString(cname);
+                    match["tile"] = obj->tile;
+                    match["distance"] = dist;
+                    match["quantity"] = inv->items[j].quantity;
+                    matches.push_back(match);
                 }
             }
         }
@@ -1824,6 +1921,15 @@ static void handleFindItem(const json& cmd)
                         obj->tile, dist, name ? name : "?", inv->items[j].quantity);
                     result += buf;
                     found++;
+
+                    json match;
+                    match["location"] = "container";
+                    match["container_id"] = objectToUniqueId(obj);
+                    match["container_name"] = safeJsonString(name);
+                    match["tile"] = obj->tile;
+                    match["distance"] = dist;
+                    match["quantity"] = inv->items[j].quantity;
+                    matches.push_back(match);
                 }
             }
         }
@@ -1839,6 +1945,11 @@ static void handleFindItem(const json& cmd)
                 snprintf(buf, sizeof(buf), "[player_inventory qty=%d] ", inv->items[j].quantity);
                 result += buf;
                 found++;
+
+                json match;
+                match["location"] = "player_inventory";
+                match["quantity"] = inv->items[j].quantity;
+                matches.push_back(match);
             }
         }
     }
@@ -1846,6 +1957,10 @@ static void handleFindItem(const json& cmd)
     if (found == 0) {
         result += "NONE FOUND";
     }
+
+    query["matches"] = matches;
+    query["match_count"] = found;
+    gAgentQueryResult = query;
 
     gAgentLastCommandDebug = result;
     debugPrint("AgentBridge: %s\n", result.c_str());
@@ -1857,6 +1972,10 @@ static void handleListAllItems(const json& cmd)
 {
     std::string result = "list_all_items elev=" + std::to_string(gDude->elevation) + ": ";
     int totalItems = 0;
+    json query = json::object();
+    query["type"] = "list_all_items";
+    query["elevation"] = gDude->elevation;
+    json entries = json::array();
 
     // Ground items (include container contents)
     {
@@ -1872,6 +1991,15 @@ static void handleListAllItems(const json& cmd)
             if (obj->data.inventory.length > 0) {
                 snprintf(buf, sizeof(buf), "[ground_container pid=%d tile=%d d=%d name=%s items=%d: ", obj->pid, obj->tile, dist, name ? name : "?", obj->data.inventory.length);
                 result += buf;
+                json entry;
+                entry["location"] = "ground_container";
+                entry["object_id"] = objectToUniqueId(obj);
+                entry["pid"] = obj->pid;
+                entry["tile"] = obj->tile;
+                entry["distance"] = dist;
+                entry["name"] = safeJsonString(name);
+                entry["item_count"] = obj->data.inventory.length;
+                json sample = json::array();
                 Inventory* inv = &obj->data.inventory;
                 for (int j = 0; j < inv->length && j < 5; j++) {
                     if (inv->items[j].item != nullptr) {
@@ -1879,12 +2007,27 @@ static void handleListAllItems(const json& cmd)
                         char ibuf[128];
                         snprintf(ibuf, sizeof(ibuf), "%s(pid=%d qty=%d) ", iname ? iname : "?", inv->items[j].item->pid, inv->items[j].quantity);
                         result += ibuf;
+                        json s;
+                        s["pid"] = inv->items[j].item->pid;
+                        s["name"] = safeJsonString(iname);
+                        s["quantity"] = inv->items[j].quantity;
+                        sample.push_back(s);
                     }
                 }
+                entry["sample_items"] = sample;
+                entries.push_back(entry);
                 result += "] ";
             } else {
                 snprintf(buf, sizeof(buf), "[ground pid=%d tile=%d d=%d name=%s] ", obj->pid, obj->tile, dist, name ? name : "?");
                 result += buf;
+                json entry;
+                entry["location"] = "ground";
+                entry["object_id"] = objectToUniqueId(obj);
+                entry["pid"] = obj->pid;
+                entry["tile"] = obj->tile;
+                entry["distance"] = dist;
+                entry["name"] = safeJsonString(name);
+                entries.push_back(entry);
             }
             totalItems++;
             if (totalItems >= 30) break;
@@ -1906,14 +2049,30 @@ static void handleListAllItems(const json& cmd)
             char buf[256];
             snprintf(buf, sizeof(buf), "[container pid=%d tile=%d d=%d name=%s items=%d: ", obj->pid, obj->tile, dist, cname ? cname : "?", inv->length);
             result += buf;
+            json entry;
+            entry["location"] = "container";
+            entry["object_id"] = objectToUniqueId(obj);
+            entry["pid"] = obj->pid;
+            entry["tile"] = obj->tile;
+            entry["distance"] = dist;
+            entry["name"] = safeJsonString(cname);
+            entry["item_count"] = inv->length;
+            json sample = json::array();
             for (int j = 0; j < inv->length && j < 5; j++) {
                 if (inv->items[j].item != nullptr) {
                     char* iname = objectGetName(inv->items[j].item);
                     char ibuf[128];
                     snprintf(ibuf, sizeof(ibuf), "%s(pid=%d qty=%d) ", iname ? iname : "?", inv->items[j].item->pid, inv->items[j].quantity);
                     result += ibuf;
+                    json s;
+                    s["pid"] = inv->items[j].item->pid;
+                    s["name"] = safeJsonString(iname);
+                    s["quantity"] = inv->items[j].quantity;
+                    sample.push_back(s);
                 }
             }
+            entry["sample_items"] = sample;
+            entries.push_back(entry);
             result += "] ";
             totalItems++;
             if (totalItems >= 30) break;
@@ -1924,6 +2083,10 @@ static void handleListAllItems(const json& cmd)
     if (totalItems == 0) {
         result += "NONE";
     }
+
+    query["entries"] = entries;
+    query["entry_count"] = entries.size();
+    gAgentQueryResult = query;
 
     gAgentLastCommandDebug = result;
     debugPrint("AgentBridge: %s\n", result.c_str());
@@ -2487,6 +2650,9 @@ static void handleSelectDialogue(const json& cmd)
 
 void processCommands()
 {
+    // Reset query payload for each command batch so stale results don't persist.
+    gAgentQueryResult = nullptr;
+
     FILE* f = fopen(kCmdPath, "rb");
     if (f == nullptr) {
         return;
@@ -2770,7 +2936,7 @@ void processCommands()
             debugPrint("AgentBridge: toggle_sneak → %s\n", sneaking ? "on" : "off");
         }
         // Inventory commands
-        else if (type == "reload_weapon") {
+        else if (type == "reload_weapon" || type == "reload_weapon_with") {
             handleReloadWeapon(cmd);
         } else if (type == "drop_item") {
             handleDropItem(cmd);

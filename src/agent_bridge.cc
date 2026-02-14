@@ -213,6 +213,12 @@ const char* detectContext()
             return "gameplay_inventory";
         if (gameMode & GameMode::kBarter)
             return "gameplay_barter";
+        if (gameMode & GameMode::kPipboy)
+            return "gameplay_pipboy";
+        if (gameMode & GameMode::kSkilldex)
+            return "gameplay_skilldex";
+        if (gameMode & GameMode::kOptions)
+            return "gameplay_options";
         if (_gdialogActive()) {
             return "gameplay_dialogue";
         }

@@ -60,6 +60,10 @@ extern std::map<std::string, int> gCommandFailureCounts;
 // Set by look_at command, consumed by next state write
 extern std::string gAgentLookAtResult;
 
+// --- Structured query results ---
+// Set by query commands (find_path/tile_objects/find_item/list_all_items).
+extern json gAgentQueryResult;
+
 // --- State emission ---
 
 void writeState();

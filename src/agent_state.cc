@@ -180,6 +180,133 @@ static const char* hitModeToString(int hitMode)
     }
 }
 
+static const char* attackModeLabelFromAnimation(int animation)
+{
+    switch (animation) {
+    case ANIM_THROW_PUNCH:
+        return "punch";
+    case ANIM_KICK_LEG:
+        return "kick";
+    case ANIM_SWING_ANIM:
+        return "swing";
+    case ANIM_THRUST_ANIM:
+        return "thrust";
+    case ANIM_THROW_ANIM:
+        return "throw";
+    case ANIM_FIRE_SINGLE:
+        return "single";
+    case ANIM_FIRE_BURST:
+        return "burst";
+    case ANIM_FIRE_CONTINUOUS:
+        return "continuous";
+    default:
+        return "unknown";
+    }
+}
+
+static const char* attackModeLabelForHitMode(Object* weapon, int hitMode)
+{
+    switch (hitMode) {
+    case HIT_MODE_PUNCH:
+    case HIT_MODE_STRONG_PUNCH:
+    case HIT_MODE_HAMMER_PUNCH:
+    case HIT_MODE_HAYMAKER:
+    case HIT_MODE_JAB:
+    case HIT_MODE_PALM_STRIKE:
+    case HIT_MODE_PIERCING_STRIKE:
+        return "punch";
+    case HIT_MODE_KICK:
+    case HIT_MODE_STRONG_KICK:
+    case HIT_MODE_SNAP_KICK:
+    case HIT_MODE_POWER_KICK:
+    case HIT_MODE_HIP_KICK:
+    case HIT_MODE_HOOK_KICK:
+    case HIT_MODE_PIERCING_KICK:
+        return "kick";
+    case HIT_MODE_LEFT_WEAPON_RELOAD:
+    case HIT_MODE_RIGHT_WEAPON_RELOAD:
+        return "reload";
+    default:
+        break;
+    }
+
+    if (weapon == nullptr)
+        return "none";
+
+    const char* byAnimation = attackModeLabelFromAnimation(weaponGetAnimationForHitMode(weapon, hitMode));
+    if (strcmp(byAnimation, "unknown") != 0)
+        return byAnimation;
+
+    switch (weaponGetAttackTypeForHitMode(weapon, hitMode)) {
+    case ATTACK_TYPE_UNARMED:
+        return "punch";
+    case ATTACK_TYPE_MELEE:
+        return "swing";
+    case ATTACK_TYPE_THROW:
+        return "throw";
+    case ATTACK_TYPE_RANGED:
+        return "single";
+    default:
+        return "unknown";
+    }
+}
+
+static void appendCombatStatusEffects(json& statusEffects, int combatResults)
+{
+    if (combatResults & DAM_CRIP_LEG_LEFT)
+        statusEffects.push_back("crippled_left_leg");
+    if (combatResults & DAM_CRIP_LEG_RIGHT)
+        statusEffects.push_back("crippled_right_leg");
+    if (combatResults & DAM_CRIP_ARM_LEFT)
+        statusEffects.push_back("crippled_left_arm");
+    if (combatResults & DAM_CRIP_ARM_RIGHT)
+        statusEffects.push_back("crippled_right_arm");
+    if (combatResults & DAM_BLIND)
+        statusEffects.push_back("blinded");
+}
+
+static bool critterHasRangedWeapon(Object* critter, int* rangeOut = nullptr, std::string* weaponNameOut = nullptr)
+{
+    if (critter == nullptr)
+        return false;
+
+    struct WeaponSlot {
+        Object* weapon;
+        int hitMode;
+    };
+
+    WeaponSlot slots[] = {
+        { critterGetItem2(critter), HIT_MODE_RIGHT_WEAPON_PRIMARY },
+        { critterGetItem1(critter), HIT_MODE_LEFT_WEAPON_PRIMARY },
+    };
+
+    bool hasRanged = false;
+    int bestRange = 0;
+    std::string bestName;
+
+    for (const auto& slot : slots) {
+        if (slot.weapon == nullptr || itemGetType(slot.weapon) != ITEM_TYPE_WEAPON)
+            continue;
+
+        if (weaponGetAttackTypeForHitMode(slot.weapon, slot.hitMode) == ATTACK_TYPE_RANGED) {
+            hasRanged = true;
+            int thisRange = weaponGetRange(critter, slot.hitMode);
+            if (thisRange > bestRange) {
+                bestRange = thisRange;
+                bestName = safeString(itemGetName(slot.weapon));
+            }
+        }
+    }
+
+    if (hasRanged) {
+        if (rangeOut != nullptr)
+            *rangeOut = bestRange;
+        if (weaponNameOut != nullptr)
+            *weaponNameOut = bestName;
+    }
+    return hasRanged;
+}
+
 static void writeWeaponAmmoInfo(json& weaponJson, Object* weapon)
 {
     if (weapon == nullptr || itemGetType(weapon) != ITEM_TYPE_WEAPON)
@@ -495,12 +622,7 @@ static void writeCharacterStats(json& state)
         statusEffects.push_back("irradiated");
         character["radiation_level"] = radiation;
     }
-    int combatResults = gDude->data.critter.combat.results;
-    if (combatResults & DAM_CRIP_LEG_LEFT) statusEffects.push_back("crippled_left_leg");
-    if (combatResults & DAM_CRIP_LEG_RIGHT) statusEffects.push_back("crippled_right_leg");
-    if (combatResults & DAM_CRIP_ARM_LEFT) statusEffects.push_back("crippled_left_arm");
-    if (combatResults & DAM_CRIP_ARM_RIGHT) statusEffects.push_back("crippled_right_arm");
-    if (combatResults & DAM_BLIND) statusEffects.push_back("blinded");
+    appendCombatStatusEffects(statusEffects, gDude->data.critter.combat.results);
     character["status_effects"] = statusEffects;
 
     // Karma
@@ -596,6 +718,7 @@ static void writeInventoryState(json& state)
 
         int weight = itemGetWeight(item);
         entry["weight"] = weight;
+        entry["cost"] = itemGetCost(item);
         totalWeight += weight * invItem->quantity;
 
         // Description (skip if empty or same as name)
@@ -720,6 +843,10 @@ static void writeInventoryState(json& state)
     if (interfaceGetCurrentHitMode(&hitMode, &aimingMode) == 0) {
         inv["current_hit_mode"] = hitMode;
         inv["current_hit_mode_name"] = hitModeToString(hitMode);
+        Object* activeItem = (currentHand == HAND_RIGHT) ? critterGetItem2(gDude) : critterGetItem1(gDude);
+        const char* attackModeLabel = attackModeLabelForHitMode(activeItem, hitMode);
+        inv["attack_mode_label"] = attackModeLabel;
+        inv["is_burst"] = (strcmp(attackModeLabel, "burst") == 0);
     }
 
     state["inventory"] = inv;
@@ -821,6 +948,13 @@ static void writeMapAndObjectState(json& state)
             c["hp"] = critterGetHitPoints(obj);
             c["max_hp"] = critterGetStat(obj, STAT_MAXIMUM_HIT_POINTS);
             c["dead"] = critterIsDead(obj);
+            Object* armor = critterGetArmor(obj);
+            if (armor != nullptr) {
+                c["armor_class"] = armorGetArmorClass(armor);
+                c["armor_name"] = safeString(itemGetName(armor));
+            } else {
+                c["armor_class"] = 0;
+            }
 
             // Disposition info
             int critterTeam = obj->data.critter.combat.team;
@@ -945,6 +1079,21 @@ static void writeMapAndObjectState(json& state)
                 s["locked"] = objectIsLocked(obj);
                 s["item_count"] = obj->data.inventory.length;
             }
+            if ((isDoor || isContainer) && obj->sid != -1) {
+                bool hasTrapScript = scriptHasProc(obj->sid, SCRIPT_PROC_USE_SKILL_ON)
+                    || scriptHasProc(obj->sid, SCRIPT_PROC_DAMAGE);
+                if (hasTrapScript) {
+                    s["has_trap_script"] = true;
+                    // Heuristic only: locked + trap-like script strongly suggests trapped.
+                    bool locked = objectIsLocked(obj);
+                    if (locked) {
+                        s["trapped"] = true;
+                        s["trap_detection"] = "heuristic_locked_script";
+                    } else {
+                        s["trap_detection"] = "heuristic_script_only";
+                    }
+                }
+            }
             if (isScripted) {
                 s["usable"] = true;
             }
@@ -1040,6 +1189,11 @@ static void writeCombatState(json& state)
         primaryHitMode = HIT_MODE_PUNCH;
         secondaryHitMode = HIT_MODE_KICK;
     }
+    if (hitMode != -1) {
+        const char* attackModeLabel = attackModeLabelForHitMode(weapon, hitMode);
+        combat["attack_mode_label"] = attackModeLabel;
+        combat["is_burst"] = (strcmp(attackModeLabel, "burst") == 0);
+    }
 
     json activeWeapon;
     if (weapon != nullptr) {
@@ -1100,6 +1254,25 @@ static void writeCombatState(json& state)
             h["distance"] = objectGetDistanceBetween(gDude, obj);
             h["hp"] = critterGetHitPoints(obj);
             h["max_hp"] = critterGetStat(obj, STAT_MAXIMUM_HIT_POINTS);
+            Object* armor = critterGetArmor(obj);
+            if (armor != nullptr) {
+                h["armor_class"] = armorGetArmorClass(armor);
+                h["armor_name"] = safeString(itemGetName(armor));
+            } else {
+                h["armor_class"] = 0;
+            }
+            int enemyRange = 0;
+            std::string enemyWeaponName;
+            bool enemyHasRanged = critterHasRangedWeapon(obj, &enemyRange, &enemyWeaponName);
+            h["has_ranged_weapon"] = enemyHasRanged;
+            if (enemyHasRanged) {
+                h["weapon_name"] = enemyWeaponName;
+                h["weapon_range"] = enemyRange;
+            }
+            json statusFlags = json::array();
+            appendCombatStatusEffects(statusFlags, obj->data.critter.combat.results);
+            if (!statusFlags.empty())
+                h["status_effects"] = statusFlags;
 
             // Hit chances for each location — use the active hand's hit mode
             int hitMode = primaryHitMode;
@@ -1240,18 +1413,35 @@ static void writePartyState(json& state)
         m["hp"] = critterGetHitPoints(obj);
         m["max_hp"] = critterGetStat(obj, STAT_MAXIMUM_HIT_POINTS);
         m["dead"] = critterIsDead(obj);
+        int poisonLevel = critterGetPoison(obj);
+        int radiationLevel = critterGetRadiation(obj);
+        if (poisonLevel > 0)
+            m["poison_level"] = poisonLevel;
+        if (radiationLevel > 0)
+            m["radiation_level"] = radiationLevel;
+        json statusEffects = json::array();
+        appendCombatStatusEffects(statusEffects, obj->data.critter.combat.results);
+        if (!statusEffects.empty())
+            m["status_effects"] = statusEffects;
 
         // Equipment
         Object* armor = critterGetArmor(obj);
         if (armor != nullptr) {
             char* arName = itemGetName(armor);
             m["armor"] = safeString(arName);
+            m["armor_class"] = armorGetArmorClass(armor);
         }
 
         Object* weapon = critterGetItem2(obj);
         if (weapon != nullptr) {
             char* wName = itemGetName(weapon);
             m["weapon"] = safeString(wName);
+            m["weapon_pid"] = weapon->pid;
+            json weaponInfo;
+            weaponInfo["pid"] = weapon->pid;
+            weaponInfo["name"] = safeString(wName);
+            writeWeaponAmmoInfo(weaponInfo, weapon);
+            m["weapon_info"] = weaponInfo;
         }
 
         partyMembers.push_back(m);
@@ -1417,6 +1607,29 @@ static void writeWorldmapState(json& state)
     if (agentWmIsInCar()) {
         wm["car_fuel"] = agentWmGetCarFuel();
         wm["car_fuel_max"] = CAR_FUEL_MAX;
+    }
+
+    Object* carTrunk = objectGetCarriedObjectByPid(gDude, PROTO_ID_CAR_TRUNK);
+    if (carTrunk != nullptr) {
+        wm["has_car_trunk"] = true;
+        json trunkItems = json::array();
+        Inventory* trunkInventory = &carTrunk->data.inventory;
+        for (int i = 0; i < trunkInventory->length; i++) {
+            InventoryItem* invItem = &trunkInventory->items[i];
+            Object* item = invItem->item;
+            if (item == nullptr)
+                continue;
+
+            json entry;
+            entry["pid"] = item->pid;
+            entry["name"] = safeString(itemGetName(item));
+            entry["quantity"] = invItem->quantity;
+            entry["type"] = itemTypeToString(itemGetType(item));
+            entry["weight"] = itemGetWeight(item);
+            entry["cost"] = itemGetCost(item);
+            trunkItems.push_back(entry);
+        }
+        wm["car_trunk_items"] = trunkItems;
     }
 
     // Known/visited locations
@@ -1686,6 +1899,10 @@ void writeState()
 
     if (!gAgentLastCommandDebug.empty()) {
         state["last_command_debug"] = safeString(gAgentLastCommandDebug.c_str());
+    }
+
+    if (!gAgentQueryResult.is_null()) {
+        state["query_result"] = gAgentQueryResult;
     }
 
     // Command failure counters — shows which commands are repeatedly failing

@@ -1,28 +1,43 @@
 # fallout2-sdk
 
-A Claude Code Gameplay Enablement Project that allows [Claude](https://claude.ai/) to play Fallout 2.
+A Claude Code project that allows [Claude](https://claude.ai/) to play Fallout 2 autonomously.
 
 ## Overview
 
-fallout2-sdk bridges Claude Code and Fallout 2 by modifying the [Fallout 2 Community Edition (CE)](https://github.com/alexbatalov/fallout2-ce) open-source engine to emit structured game state and accept input commands via JSON files. Claude observes the game world each tick, reasons about objectives and tactics, and issues commands — playing Fallout 2 autonomously through an observe → reason → act loop.
+fallout2-sdk bridges Claude Code and Fallout 2 by modifying the [Fallout 2 Community Edition (CE)](https://github.com/alexbatalov/fallout2-ce) open-source engine to emit structured game state and accept input commands via JSON files. Claude observes the game world each tick, reasons about objectives and tactics, and issues commands — playing Fallout 2 through an observe → decide → act loop, with an in-character persona voice rendered as floating text in the game world.
 
 ## Project Structure
 
 ```
 fallout2-sdk/
-├── engine/fallout2-ce/     # Fallout 2 CE (git submodule) — upstream engine
-├── src/                    # C++ agent bridge (patches applied on top of CE)
-│   ├── agent_bridge.cc     # Core: init/exit, ticker, context detection
-│   ├── agent_bridge.h      # Public API
-│   ├── agent_bridge_internal.h  # Shared internals
-│   ├── agent_state.cc      # All state emission (character, map, combat, dialogue, etc.)
-│   └── agent_commands.cc   # All command handlers (50+ commands)
-├── scripts/                # Setup and test scripts
-├── game/                   # Local Fallout 2 game data (NOT committed — see Setup)
-│   ├── agent_state.json    # Game state output (written every tick by bridge)
-│   └── agent_cmd.json      # Command input (read and consumed by bridge)
-├── docs/                   # Architecture docs, technical spec, session journal
-└── CLAUDE.md               # Claude Code project instructions
+├── engine/
+│   ├── fallout2-ce/            # Fallout 2 CE (git submodule) — upstream engine
+│   └── patches/                # Engine patches (applied on top of CE)
+├── src/                        # C++ agent bridge
+│   ├── agent_bridge.h          # Public API
+│   ├── agent_bridge_internal.h # Shared internals
+│   ├── agent_bridge.cc         # Core: init/exit, ticker, context detection
+│   ├── agent_state.cc          # State emission (character, map, combat, dialogue, etc.)
+│   └── agent_commands.cc       # Command handlers (60+ commands)
+├── scripts/
+│   ├── executor.sh             # Gameplay shell — all Claude interaction goes through here
+│   ├── float_response.sh       # Hook: renders Claude's responses as in-game floating text
+│   ├── setup.sh                # First-time setup (copies game data)
+│   ├── apply-patches.sh        # Apply engine patches after clone/pull
+│   └── generate-patches.sh     # Generate patches after modifying engine
+├── docs/
+│   ├── gameplay-guide.md       # Spoiler-light interaction cheat sheet
+│   ├── default-persona.md      # Default character persona (copied to game/ at start)
+│   └── journal.md              # Session-by-session development history
+├── .claude/skills/             # Claude Code slash commands (/game-note, /game-log, etc.)
+├── game/                       # Runtime data (NOT committed — see Setup)
+│   ├── agent_state.json        # Game state output (written every tick by bridge)
+│   ├── agent_cmd.json          # Command input (read and consumed by bridge)
+│   ├── knowledge/              # Persistent in-game notes (locations, items, quests, etc.)
+│   └── game_log.md             # Gameplay decision/event log
+├── sdk.cfg.example             # Configuration template (copy to sdk.cfg)
+├── CLAUDE.md                   # Claude Code project instructions
+└── LICENSE
 ```
 
 ## Prerequisites
@@ -134,25 +149,38 @@ CMake presets in `engine/fallout2-ce/CMakePresets.json` support cross-platform b
 
 ## Architecture
 
+```
+Claude Code (CLI) ←→ JSON files ←→ Agent Bridge (C++) ←→ Fallout 2 CE Engine + SDL2
+```
+
 The agent bridge hooks into the Fallout 2 CE engine to provide two-way JSON communication:
 
 - **State emission** (`game/agent_state.json`) — player stats/skills/perks, map/objects, inventory, combat (AP, hostiles, hit chances), dialogue, barter, world map, quests, party, message log, game time — across 11 fine-grained contexts
-- **Command input** (`game/agent_cmd.json`) — 50+ commands for exploration, combat, dialogue, inventory, barter, world map, level-up, save/load, and character creation
+- **Command input** (`game/agent_cmd.json`) — 60+ commands for exploration, combat, dialogue, inventory, barter, world map, level-up, save/load, and character creation
 - **Muse system** — floating orange text above the player's head renders Claude's inner monologue in real-time, spoken in the character's persona voice with complexity scaled to the character's Intelligence stat (INT 1-3: simple fragments, INT 9-10: eloquent prose)
+- **Float response hook** — Claude's natural language responses are also rendered as in-game floating text via a Claude Code hook (`scripts/float_response.sh`), so the character "speaks" in the game world
 
-Key integration points: ticker callback (per-tick state/commands), context hooks (`mainmenu.cc`, `character_selector.cc`, `character_editor.cc`, `main.cc`), animation system (`reg_anim_*`), action system (`actionPickUp`, `actionUseSkill`, etc.), and custom accessor functions for static engine state.
+### Gameplay Layer
 
-See [`CLAUDE.md`](CLAUDE.md) for development and gameplay instructions, and [`docs/fallout2-sdk-technical-spec.md`](docs/fallout2-sdk-technical-spec.md) for the full technical spec.
+On top of the C++ bridge, a shell-based gameplay layer provides Claude with high-level abstractions:
+
+- **Executor shell** (`scripts/executor.sh`) — tactical helper functions for common gameplay loops (combat, movement, exploration, looting, dialogue). Functions like `do_combat`, `move_and_wait`, `explore_area`, `loot`, `talk`, and `heal_to_full` handle polling and state-checking internally, reducing Claude's observe-act cycle to single function calls
+- **Persona system** (`docs/default-persona.md` → `game/persona.md`) — defines the character's personality, voice, and roleplaying style. Claude plays in-character, with inner monologue via `muse` and spoken responses as floating text
+- **Knowledge system** (`game/knowledge/`) — persistent notes organized by topic (locations, characters, items, quests, strategies, world lore). Claude records discoveries during play and recalls them when relevant
+- **Game log** (`game/game_log.md`) — chronological record of gameplay decisions, combat outcomes, and events
+- **Claude Code skills** — slash commands (`/game-note`, `/game-recall`, `/game-log`) for quick access to the knowledge and logging systems
+
+Key engine integration points: ticker callback (per-tick state/commands), context hooks (`mainmenu.cc`, `character_selector.cc`, `character_editor.cc`, `main.cc`), animation system (`reg_anim_*`), action system (`actionPickUp`, `actionUseSkill`, etc.), and custom accessor functions for static engine state.
+
+See [`CLAUDE.md`](CLAUDE.md) for development and gameplay instructions.
 
 ## Project Status
 
-Active development. The agent bridge has been validated through:
+Active development. The agent bridge has been validated through autonomous gameplay:
 
-- **Temple of Trials** — fully cleared legitimately by Claude Code (character creation, 3 dungeon levels, combat, lockpicking, explosive puzzle, Cameron's unarmed test, vault suit movie)
+- **Temple of Trials** — fully cleared legitimately (character creation, 3 dungeon levels, combat, lockpicking, explosive puzzle, Cameron's unarmed test)
 - **Klamath** — world map travel, NPC dialogue trees, barter trading, ranged combat with ammo tracking, container looting, Sulik recruitment
 - **All major gameplay systems** functional: exploration, combat, dialogue, inventory, barter, world map, quests, level-up, party, save/load
-
-See [`docs/journal.md`](docs/journal.md) for session-by-session development history.
 
 ## License
 
