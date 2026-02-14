@@ -41,6 +41,7 @@ const char* traitIdToName(int trait);
 const char* detectContext();
 const char* itemTypeToString(int type);
 const char* sceneryTypeToString(int type);
+std::string safeString(const char* str);
 
 // --- Explosive timer bypass ---
 extern int gAgentPendingExplosiveTimer;
@@ -90,7 +91,8 @@ extern std::string gAgentSessionId;
 void agentDebugLogInit();
 void agentDebugLogExit();
 void agentDebugLogCommand(const std::string& type, const json& cmd,
-    const std::string& result, bool isFailure);
+    const std::string& result, bool isFailure,
+    const char* context = nullptr);
 void agentDebugLogStateChange(const char* event, const json& details);
 
 // --- Command processing ---

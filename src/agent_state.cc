@@ -54,7 +54,7 @@ static const int kObjectEnumInterval = 10;
 
 // Sanitize a C string to valid UTF-8 for JSON serialization.
 // Replaces invalid bytes with '?' to prevent nlohmann::json crashes.
-static std::string safeString(const char* str)
+std::string safeString(const char* str)
 {
     if (str == nullptr)
         return "";

@@ -2,6 +2,7 @@
 #include "agent_bridge_internal.h"
 
 #include <SDL.h>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -185,7 +186,10 @@ static int64_t debugLogTimestampMs()
 void agentDebugLogInit()
 {
     // Create debug directory
-    mkdir("debug", 0755);
+    if (mkdir("debug", 0755) != 0 && errno != EEXIST) {
+        debugPrint("AgentBridge: failed to create debug/ directory: %s\n", strerror(errno));
+        return;
+    }
 
     // Rotate: current -> prev, delete old prev
     const char* files[] = { "bridge.ndjson", "executor.ndjson", "hook.ndjson" };
@@ -251,7 +255,8 @@ static void debugLogWriteLine(const std::string& line)
 }
 
 void agentDebugLogCommand(const std::string& type, const json& cmd,
-    const std::string& result, bool isFailure)
+    const std::string& result, bool isFailure,
+    const char* context)
 {
     if (gAgentDebugLog == nullptr)
         return;
@@ -261,7 +266,7 @@ void agentDebugLogCommand(const std::string& type, const json& cmd,
     entry["tick"] = gAgentTick;
     entry["event"] = "cmd";
     entry["type"] = type;
-    entry["context"] = detectContext();
+    entry["context"] = context ? context : detectContext();
     entry["result"] = result;
     if (isFailure)
         entry["failure"] = true;
@@ -293,7 +298,10 @@ void agentDebugLogStateChange(const char* event, const json& details)
     entry["tick"] = gAgentTick;
     entry["event"] = "state";
     entry["change"] = event;
-    entry.merge_patch(details);
+    for (auto& [key, val] : details.items()) {
+        if (key != "ts" && key != "tick" && key != "event" && key != "change")
+            entry[key] = val;
+    }
 
     debugLogWriteLine(entry.dump(-1));
 }
@@ -388,12 +396,10 @@ static int gDebugPrevHP = -1;
 static bool gDebugPrevInCombat = false;
 static std::string gDebugPrevMapName;
 
-static void detectStateChanges()
+static void detectStateChanges(const char* ctx)
 {
     if (gAgentDebugLog == nullptr)
         return;
-
-    const char* ctx = detectContext();
 
     // Context change
     if (gDebugPrevContext != nullptr && ctx != nullptr
@@ -420,11 +426,12 @@ static void detectStateChanges()
     }
     gDebugPrevInCombat = inCombat;
 
-    // Map change
-    std::string curMap(gMapHeader.name);
+    // Map change — bounded read to prevent buffer over-read on 16-char names
+    std::string curMap(gMapHeader.name, strnlen(gMapHeader.name, sizeof(gMapHeader.name)));
     if (!gDebugPrevMapName.empty() && curMap != gDebugPrevMapName) {
         agentDebugLogStateChange("map_change",
-            { { "from", gDebugPrevMapName }, { "to", curMap } });
+            { { "from", safeString(gDebugPrevMapName.c_str()) },
+                { "to", safeString(curMap.c_str()) } });
     }
     gDebugPrevMapName = curMap;
 }
@@ -458,17 +465,17 @@ void agentBridgeTick()
         && (gAgentTick - gAgentDialogueSelectTick) >= kDialogueHighlightDelay) {
         int index = gAgentPendingDialogueSelect;
         gAgentPendingDialogueSelect = -1;
-        const char* ctx = detectContext();
-        if (ctx != nullptr && strcmp(ctx, "gameplay_dialogue") == 0) {
+        const char* dialogueCtx = detectContext();
+        if (dialogueCtx != nullptr && strcmp(dialogueCtx, "gameplay_dialogue") == 0) {
             enqueueInputEvent('1' + index);
             debugPrint("AgentBridge: deferred select_dialogue index=%d injected\n", index);
         } else {
             debugPrint("AgentBridge: deferred select_dialogue index=%d DROPPED (context=%s)\n",
-                index, ctx ? ctx : "null");
+                index, dialogueCtx ? dialogueCtx : "null");
         }
     }
 
-    detectStateChanges();
+    detectStateChanges(ctx);
     writeState();
 }
 

@@ -14,7 +14,7 @@ TMP="$GAME_DIR/agent_cmd.tmp"
 DEBUG_DIR="$GAME_DIR/debug"
 HOOK_LOG="$DEBUG_DIR/hook.ndjson"
 
-_hook_ts() { date +%s000; }
+_hook_ts() { python3 -c "import time; print(int(time.time()*1000))" 2>/dev/null || date +%s000; }
 _hook_log() { [ -d "$DEBUG_DIR" ] && echo "$1" >> "$HOOK_LOG" 2>/dev/null; }
 
 # Read hook input from stdin

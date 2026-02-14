@@ -183,21 +183,29 @@ TMP="$GAME_DIR/agent_cmd.tmp"
 DEBUG_DIR="$GAME_DIR/debug"
 DEBUG_LOG="$DEBUG_DIR/executor.ndjson"
 
+# Load zsh datetime module once at source time for EPOCHREALTIME
+zmodload -s zsh/datetime 2>/dev/null
+
 _dbg() {
     [ -d "$DEBUG_DIR" ] && echo "$1" >> "$DEBUG_LOG" 2>/dev/null
 }
 
 _dbg_ts() {
-    zmodload -s zsh/datetime 2>/dev/null
     printf '%d' $(( ${EPOCHREALTIME:-$(date +%s)} * 1000 ))
 }
 
+# Sanitize a string for safe JSON interpolation (strip quotes and backslashes)
+_dbg_san() {
+    printf '%s' "${1//[\"\\]/}"
+}
+
 _dbg_start() {
-    _dbg "{\"ts\":$(_dbg_ts),\"tick\":$(tick 2>/dev/null),\"event\":\"action_start\",\"fn\":\"$1\",\"args\":\"${2:-}\"}"
+    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"action_start\",\"fn\":\"$1\",\"args\":\"$(_dbg_san "${2:-}")\"}"
 }
 
 _dbg_end() {
-    _dbg "{\"ts\":$(_dbg_ts),\"tick\":$(tick 2>/dev/null),\"event\":\"action_end\",\"fn\":\"$1\",\"result\":\"$2\",\"duration_ms\":$(( $(_dbg_ts) - ${3:-0} ))}"
+    local _now=$(_dbg_ts)
+    _dbg "{\"ts\":$_now,\"event\":\"action_end\",\"fn\":\"$1\",\"result\":\"$(_dbg_san "$2")\",\"duration_ms\":$(( _now - ${3:-0} ))}"
 }
 
 # ─── Core I/O ─────────────────────────────────────────────────────────
@@ -210,7 +218,7 @@ cmd() {
     send "{\"commands\":[$1]}"
     local _type="?"
     [[ "$1" =~ '"type":"([^"]+)"' ]] && _type="${match[1]}"
-    _dbg "{\"ts\":$(_dbg_ts),\"tick\":$(tick 2>/dev/null),\"event\":\"cmd\",\"caller\":\"${funcstack[2]:-direct}\",\"type\":\"$_type\"}"
+    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"cmd_sent\",\"caller\":\"${funcstack[2]:-direct}\",\"type\":\"$_type\"}"
 }
 
 py() {
@@ -246,12 +254,14 @@ wait_idle() {
     for i in $(seq 1 $max); do
         local busy=$(field "player.animation_busy")
         if [ "$busy" = "false" ] || [ "$busy" = "False" ]; then
-            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"idle\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"ok\"}"
+            local _now=$(_dbg_ts)
+            _dbg "{\"ts\":$_now,\"event\":\"wait\",\"type\":\"idle\",\"duration_ms\":$(( _now - _w_start )),\"result\":\"ok\"}"
             return 0
         fi
         sleep 0.5
     done
-    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"idle\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"timeout\"}"
+    local _now=$(_dbg_ts)
+    _dbg "{\"ts\":$_now,\"event\":\"wait\",\"type\":\"idle\",\"duration_ms\":$(( _now - _w_start )),\"result\":\"timeout\"}"
     echo "WARN: wait_idle timeout" >&2
     return 1
 }
@@ -262,12 +272,14 @@ wait_context() {
     for i in $(seq 1 $max); do
         local ctx=$(context)
         if [ "$ctx" = "$target" ]; then
-            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"context\",\"target\":\"$target\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"ok\"}"
+            local _now=$(_dbg_ts)
+            _dbg "{\"ts\":$_now,\"event\":\"wait\",\"type\":\"context\",\"target\":\"$target\",\"duration_ms\":$(( _now - _w_start )),\"result\":\"ok\"}"
             return 0
         fi
         sleep 0.5
     done
-    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"context\",\"target\":\"$target\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"timeout\"}"
+    local _now=$(_dbg_ts)
+    _dbg "{\"ts\":$_now,\"event\":\"wait\",\"type\":\"context\",\"target\":\"$target\",\"duration_ms\":$(( _now - _w_start )),\"result\":\"timeout\"}"
     echo "WARN: wait_context timeout for '$target' (got '$(context)')" >&2
     return 1
 }
@@ -278,14 +290,16 @@ wait_context_prefix() {
     for i in $(seq 1 $max); do
         local ctx=$(context)
         if [[ "$ctx" == ${prefix}* ]]; then
-            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"context_prefix\",\"target\":\"$prefix\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"ok\"}"
+            local _now=$(_dbg_ts)
+            _dbg "{\"ts\":$_now,\"event\":\"wait\",\"type\":\"context_prefix\",\"target\":\"$prefix\",\"duration_ms\":$(( _now - _w_start )),\"result\":\"ok\"}"
             return 0
         fi
         # Auto-skip movies
         [ "$ctx" = "movie" ] && cmd '{"type":"skip"}' && sleep 1 && continue
         sleep 0.5
     done
-    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"context_prefix\",\"target\":\"$prefix\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"timeout\"}"
+    local _now=$(_dbg_ts)
+    _dbg "{\"ts\":$_now,\"event\":\"wait\",\"type\":\"context_prefix\",\"target\":\"$prefix\",\"duration_ms\":$(( _now - _w_start )),\"result\":\"timeout\"}"
     echo "WARN: wait_context_prefix timeout for '$prefix' (got '$(context)')" >&2
     return 1
 }
@@ -298,12 +312,14 @@ wait_tick_advance() {
     for i in $(seq 1 $max); do
         local t=$(tick)
         if [ "$t" != "$cur_tick" ]; then
-            _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"tick_advance\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"ok\"}"
+            local _now=$(_dbg_ts)
+            _dbg "{\"ts\":$_now,\"event\":\"wait\",\"type\":\"tick_advance\",\"duration_ms\":$(( _now - _w_start )),\"result\":\"ok\"}"
             return 0
         fi
         sleep 0.3
     done
-    _dbg "{\"ts\":$(_dbg_ts),\"event\":\"wait\",\"type\":\"tick_advance\",\"duration_ms\":$(( $(_dbg_ts) - _w_start )),\"result\":\"timeout\"}"
+    local _now=$(_dbg_ts)
+    _dbg "{\"ts\":$_now,\"event\":\"wait\",\"type\":\"tick_advance\",\"duration_ms\":$(( _now - _w_start )),\"result\":\"timeout\"}"
     return 1
 }
 
@@ -658,11 +674,14 @@ debug_find() {
     # Grep across all debug NDJSON files for a pattern.
     # Usage: debug_find <pattern>
     local pattern="${1:?Usage: debug_find <pattern>}"
+    if [ ! -d "$DEBUG_DIR" ]; then echo "No debug directory (game not running?)"; return 1; fi
     python3 -c "
 import json, sys, os, re
 
 pattern = sys.argv[1]
 debug_dir = sys.argv[2]
+if not os.path.isdir(debug_dir):
+    print('No debug directory'); sys.exit(1)
 files = [os.path.join(debug_dir, f) for f in os.listdir(debug_dir) if f.endswith('.ndjson')]
 files.sort()
 for fpath in files:
@@ -692,10 +711,13 @@ debug_timeline() {
 
 debug_last_failure() {
     # Find the most recent failure event across all debug logs.
+    if [ ! -d "$DEBUG_DIR" ]; then echo "No debug directory (game not running?)"; return 1; fi
     python3 -c "
 import json, sys, os
 
 debug_dir = sys.argv[1]
+if not os.path.isdir(debug_dir):
+    print('No debug directory'); sys.exit(1)
 files = [os.path.join(debug_dir, f) for f in os.listdir(debug_dir) if f.endswith('.ndjson') and not f.startswith('prev_')]
 failures = []
 for fpath in files:
