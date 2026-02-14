@@ -105,7 +105,7 @@ index 0884eb2..363f81b 100644
                  break;
              }
 diff --git a/src/character_editor.cc b/src/character_editor.cc
-index 0d989a7..9e5c730 100644
+index 0d989a7..7329f33 100644
 --- a/src/character_editor.cc
 +++ b/src/character_editor.cc
 @@ -8,6 +8,10 @@
@@ -119,6 +119,15 @@ index 0d989a7..9e5c730 100644
  #include "art.h"
  #include "color.h"
  #include "combat.h"
+@@ -743,7 +747,7 @@ static int gPerkDialogCardFrmId;
+ static int gCharacterEditorCardFrmId;
+ 
+ // 0x5709D0
+-static bool gCharacterEditorIsCreationMode;
++bool gCharacterEditorIsCreationMode;
+ 
+ // 0x5709D4
+ static int gCharacterEditorTaggedSkillsBackup[NUM_TAGGED_SKILLS];
 @@ -754,19 +758,19 @@ static int gCharacterEditorOptionalTraitsBackup[3];
  // current index for selecting new trait
  //
@@ -192,10 +201,10 @@ index 0d989a7..9e5c730 100644
 +
  } // namespace fallout
 diff --git a/src/character_editor.h b/src/character_editor.h
-index af69e84..00d19f1 100644
+index af69e84..1d7bdea 100644
 --- a/src/character_editor.h
 +++ b/src/character_editor.h
-@@ -6,6 +6,10 @@
+@@ -6,6 +6,11 @@
  namespace fallout {
  
  extern int gCharacterEditorRemainingCharacterPoints;
@@ -203,10 +212,11 @@ index af69e84..00d19f1 100644
 +extern int gCharacterEditorTempTraitCount;
 +extern int gCharacterEditorTempTraits[3];
 +extern int gCharacterEditorTempTaggedSkills[4];
++extern bool gCharacterEditorIsCreationMode;
  
  int characterEditorShow(bool isCreationMode);
  void characterEditorInit();
-@@ -15,6 +19,12 @@ int characterEditorSave(File* stream);
+@@ -15,6 +20,12 @@ int characterEditorSave(File* stream);
  int characterEditorLoad(File* stream);
  void characterEditorReset();
  

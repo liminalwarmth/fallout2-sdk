@@ -501,6 +501,71 @@ static void writeCharEditorState(json& state)
         character["available_perks"] = availablePerks;
     }
 
+    // Creation mode flag
+    character["is_creation_mode"] = gCharacterEditorIsCreationMode;
+
+    // Active perks (with descriptions) — same as writeCharacterStats
+    json perks = json::array();
+    for (int i = 0; i < PERK_COUNT; i++) {
+        int rank = perkGetRank(gDude, i);
+        if (rank > 0) {
+            json p;
+            p["id"] = i;
+            char* pName = perkGetName(i);
+            p["name"] = safeString(pName);
+            p["rank"] = rank;
+            p["description"] = safeString(perkGetDescription(i));
+            perks.push_back(p);
+        }
+    }
+    if (!perks.empty())
+        character["perks"] = perks;
+
+    // Karma
+    character["karma"] = gameGetGlobalVar(GVAR_PLAYER_REPUTATION);
+
+    // Town reputations (only emit non-zero values)
+    json townReps;
+    struct { int gvar; const char* name; } editorTownRepEntries[] = {
+        { GVAR_TOWN_REP_ARROYO, "arroyo" },
+        { GVAR_TOWN_REP_KLAMATH, "klamath" },
+        { GVAR_TOWN_REP_THE_DEN, "the_den" },
+        { GVAR_TOWN_REP_VAULT_CITY, "vault_city" },
+        { GVAR_TOWN_REP_GECKO, "gecko" },
+        { GVAR_TOWN_REP_MODOC, "modoc" },
+        { GVAR_TOWN_REP_SIERRA_BASE, "sierra_base" },
+        { GVAR_TOWN_REP_BROKEN_HILLS, "broken_hills" },
+        { GVAR_TOWN_REP_NEW_RENO, "new_reno" },
+        { GVAR_TOWN_REP_REDDING, "redding" },
+        { GVAR_TOWN_REP_NCR, "ncr" },
+        { GVAR_TOWN_REP_VAULT_13, "vault_13" },
+        { GVAR_TOWN_REP_SAN_FRANCISCO, "san_francisco" },
+        { GVAR_TOWN_REP_VAULT_15, "vault_15" },
+        { GVAR_TOWN_REP_GHOST_FARM, "ghost_farm" },
+        { GVAR_TOWN_REP_NAVARRO, "navarro" },
+    };
+    for (const auto& entry : editorTownRepEntries) {
+        int val = gameGetGlobalVar(entry.gvar);
+        if (val != 0)
+            townReps[entry.name] = val;
+    }
+    if (!townReps.empty())
+        character["town_reputations"] = townReps;
+
+    // Kill counts
+    json killCounts;
+    for (int i = 0; i < KILL_TYPE_COUNT; i++) {
+        int count = killsGetByType(i);
+        if (count > 0) {
+            char* kName = killTypeGetName(i);
+            if (kName != nullptr) {
+                killCounts[safeString(kName)] = count;
+            }
+        }
+    }
+    if (!killCounts.empty())
+        character["kill_counts"] = killCounts;
+
     state["character"] = character;
     state["available_actions"] = json::array({
         "set_name", "finish_character_creation",

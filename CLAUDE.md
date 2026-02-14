@@ -54,9 +54,18 @@ Always test bridge changes in the running game: build → deploy → codesign �
 
 - `engine/fallout2-ce/` — upstream engine submodule (never commit here directly)
 - `src/` — agent bridge C++ (patches on top of CE)
-- `scripts/` — setup, executor, and maintenance scripts
-- `game/` — runtime data + JSON files (git-ignored); includes `knowledge/`, `persona.md`, `thought_log.md`
+- `scripts/` — executor shell + sub-modules, hooks, setup, patch scripts
+  - `executor.sh` — core I/O, waits, state inspection, save/load, knowledge, help
+  - `executor_world.sh` — movement (`move_and_wait`), exploration, interaction, healing, party
+  - `executor_combat.sh` — `do_combat` monitoring loop (engine AI handles decisions)
+  - `executor_dialogue.sh` — dialogue, persona, thought system
+  - `executor_chargen.sh` — character creation & level-up helpers
+  - `game_state_hook.py` — PreToolUse hook: injects `[GAME]` status before Bash calls
+  - `float_response.sh` — renders Claude's text as in-game floating text
+- `game/` — runtime data + JSON files (git-ignored); includes `knowledge/`, `debug/`, `persona.md`, `thought_log.md`, `objectives.md`
 - `docs/` — gameplay guide, default persona (`default-persona.md` → copied to `game/persona.md`), journal
+- `.claude/settings.json` — hooks (PreToolUse game state, float response, PreCompact status)
+- `.claude/skills/` — slash commands (`/game-note`, `/game-recall`, `/game-log`, `/run-codex`)
 
 ## Engine Patches
 

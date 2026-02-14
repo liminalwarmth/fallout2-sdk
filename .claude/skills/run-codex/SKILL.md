@@ -19,7 +19,7 @@ cd "$(git rev-parse --show-toplevel)"
 OUTFILE=$(mktemp /tmp/codex_result.XXXXXX)
 /opt/homebrew/bin/codex exec "$ARGUMENTS" \
   -m gpt-5.3-codex \
-  -c model_reasoning_effort="xhigh" \
+  -c model_reasoning_effort="high" \
   --ephemeral --full-auto \
   -o "$OUTFILE" 2>&1
 ```

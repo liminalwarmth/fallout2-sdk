@@ -92,6 +92,31 @@ def main():
         parts.append(f"NPC:{npc}")
         parts.append(f"options:{len(options)}")
 
+    # Character editor details
+    if ctx == "character_editor":
+        char = d.get("character", {})
+        is_creation = char.get("is_creation_mode", True)
+        mode = "creation" if is_creation else "level-up"
+        parts.append(f"editor:{mode}")
+        rem_pts = char.get("remaining_points", 0)
+        if rem_pts > 0:
+            parts.append(f"SPECIAL_pts:{rem_pts}")
+        tag_rem = char.get("tagged_skills_remaining", 0)
+        if tag_rem > 0:
+            parts.append(f"tag_slots:{tag_rem}")
+        usp = char.get("unspent_skill_points", 0)
+        if usp > 0:
+            parts.append(f"SP:{usp}")
+        avail_perks = char.get("available_perks", [])
+        if avail_perks:
+            parts.append("PERK AVAILABLE")
+
+    # Level-up flag in gameplay contexts
+    if str(ctx).startswith("gameplay_"):
+        char = d.get("character", {})
+        if char.get("can_level_up"):
+            parts.append("LEVEL-UP")
+
     brief = " | ".join(parts)
 
     # Output hook response

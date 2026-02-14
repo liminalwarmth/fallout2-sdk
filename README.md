@@ -21,6 +21,11 @@ fallout2-sdk/
 │   └── agent_commands.cc       # Command handlers (60+ commands)
 ├── scripts/
 │   ├── executor.sh             # Gameplay shell — all Claude interaction goes through here
+│   ├── executor_world.sh       # Movement, navigation, exploration, interaction, healing
+│   ├── executor_combat.sh      # Auto-combat monitoring loop and quip generation
+│   ├── executor_dialogue.sh    # Dialogue, persona, and thought system
+│   ├── executor_chargen.sh    # Character creation & level-up helpers
+│   ├── game_state_hook.py      # PreToolUse hook: injects game state before Bash calls
 │   ├── float_response.sh       # Hook: renders Claude's responses as in-game floating text
 │   ├── setup.sh                # First-time setup (copies game data)
 │   ├── apply-patches.sh        # Apply engine patches after clone/pull
@@ -29,12 +34,18 @@ fallout2-sdk/
 │   ├── gameplay-guide.md       # Spoiler-light interaction cheat sheet
 │   ├── default-persona.md      # Default character persona (copied to game/ at start)
 │   └── journal.md              # Session-by-session development history
-├── .claude/skills/             # Claude Code slash commands (/game-note, /game-log, etc.)
+├── .claude/
+│   ├── settings.json           # Claude Code hooks (PreToolUse, Stop, PreCompact)
+│   └── skills/                 # Slash commands (/game-note, /game-log, /game-recall, /run-codex)
 ├── game/                       # Runtime data (NOT committed — see Setup)
 │   ├── agent_state.json        # Game state output (written every tick by bridge)
 │   ├── agent_cmd.json          # Command input (read and consumed by bridge)
 │   ├── knowledge/              # Persistent in-game notes (locations, items, quests, etc.)
-│   └── game_log.md             # Gameplay decision/event log
+│   ├── debug/                  # NDJSON debug logs (bridge, executor, hook)
+│   ├── game_log.md             # Gameplay decision/event log
+│   ├── persona.md              # Active character persona (copied from docs/default-persona.md)
+│   ├── thought_log.md          # In-character reasoning log
+│   └── objectives.md           # Current tactical sub-objectives
 ├── sdk.cfg.example             # Configuration template (copy to sdk.cfg)
 ├── CLAUDE.md                   # Claude Code project instructions
 └── LICENSE
@@ -160,15 +171,27 @@ The agent bridge hooks into the Fallout 2 CE engine to provide two-way JSON comm
 - **Muse system** — floating orange text above the player's head renders Claude's inner monologue in real-time, spoken in the character's persona voice with complexity scaled to the character's Intelligence stat (INT 1-3: simple fragments, INT 9-10: eloquent prose)
 - **Float response hook** — Claude's natural language responses are also rendered as in-game floating text via a Claude Code hook (`scripts/float_response.sh`), so the character "speaks" in the game world
 
+### Hooks
+
+Claude Code hooks (`.claude/settings.json`) provide real-time integration:
+
+- **PreToolUse (game state)** — `scripts/game_state_hook.py` injects a compact `[GAME]` status line before every Bash call, so Claude always has current HP/tile/map/context without explicit polling
+- **PreToolUse + Stop (float response)** — `scripts/float_response.sh` renders Claude's natural language output as in-game floating text (async, non-blocking)
+- **PreCompact** — sets an in-game status message ("Compacting context") when the conversation is being compressed
+
 ### Gameplay Layer
 
 On top of the C++ bridge, a shell-based gameplay layer provides Claude with high-level abstractions:
 
-- **Executor shell** (`scripts/executor.sh`) — tactical helper functions for common gameplay loops (combat, movement, exploration, looting, dialogue). Functions like `do_combat`, `move_and_wait`, `explore_area`, `loot`, `talk`, and `heal_to_full` handle polling and state-checking internally, reducing Claude's observe-act cycle to single function calls
+- **Executor shell** (`scripts/executor.sh` + sub-modules) — tactical helper functions for common gameplay loops, split across focused modules:
+  - `executor_world.sh` — unified `move_and_wait` (tile movement + exit grid navigation), exploration sweeps, interaction (loot, examine, use_skill, talk), healing, party management, ammo/reload
+  - `executor_combat.sh` — `do_combat` monitoring loop (engine-native `_combat_ai()` handles decisions; the shell monitors for death, stuck, critical HP, and combat end)
+  - `executor_dialogue.sh` — dialogue assessment, option selection, persona system, thought logging
+  - Core (`executor.sh`) — I/O primitives (`cmd`, `py`, `field`), wait helpers, state inspection (`status`, `look_around`, `inventory`), save/load, knowledge management (`note`, `recall`, `game_log`, `objective`)
 - **Persona system** (`docs/default-persona.md` → `game/persona.md`) — defines the character's personality, voice, and roleplaying style. Claude plays in-character, with inner monologue via `muse` and spoken responses as floating text
 - **Knowledge system** (`game/knowledge/`) — persistent notes organized by topic (locations, characters, items, quests, strategies, world lore). Claude records discoveries during play and recalls them when relevant
-- **Game log** (`game/game_log.md`) — chronological record of gameplay decisions, combat outcomes, and events
-- **Claude Code skills** — slash commands (`/game-note`, `/game-recall`, `/game-log`) for quick access to the knowledge and logging systems
+- **Debug system** (`game/debug/`) — structured NDJSON logging across bridge, executor, and hooks. Functions like `debug_tail`, `debug_find`, `debug_timeline`, and `debug_last_failure` provide post-hoc analysis
+- **Claude Code skills** — slash commands (`/game-note`, `/game-recall`, `/game-log`, `/run-codex`) for quick access to knowledge, logging, and cross-model code review
 
 Key engine integration points: ticker callback (per-tick state/commands), context hooks (`mainmenu.cc`, `character_selector.cc`, `character_editor.cc`, `main.cc`), animation system (`reg_anim_*`), action system (`actionPickUp`, `actionUseSkill`, etc.), and custom accessor functions for static engine state.
 
