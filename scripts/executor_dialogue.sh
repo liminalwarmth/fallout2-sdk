@@ -466,6 +466,7 @@ talk() {
         fi
         sleep 0.5
         dialogue_assess
+        _end_status
         _dbg_end "talk" "ok" "$_ds"
     else
         # Options specified — select them in sequence with history tracking
@@ -481,6 +482,7 @@ talk() {
         done
         # Auto-capture dialogue info when conversation ends
         post_dialogue_hook
+        _end_status
         _dbg_end "talk" "ok" "$_ds"
     fi
 }

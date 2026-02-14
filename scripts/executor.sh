@@ -449,6 +449,12 @@ print(f\"HP:{hp}/{max_hp} Lv:{lvl} Tile:{tile} {m.get('name','?')} {ctx} [{obj_s
 "
 }
 
+_end_status() {
+    # Print compact game state after action completion.
+    local s=$(status 2>/dev/null)
+    [ -n "$s" ] && echo "=> $s"
+}
+
 look_around() {
     # Print actionable objects near player, distance-capped and deduped.
     # Usage: look_around [max_dist]   (default: 25 tiles ≈ 1-2 screens)

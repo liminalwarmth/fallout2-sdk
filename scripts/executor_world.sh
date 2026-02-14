@@ -74,6 +74,7 @@ move_and_wait() {
         local cur=$(field "player.tile")
         if [ "$cur" = "$tile" ]; then
             echo "Arrived at tile $cur"
+            _end_status
             _dbg_end "move_and_wait" "ok" "$_ds"
             return 0
         fi
@@ -245,6 +246,7 @@ for e in exits:
         local new_elev=$(field "map.elevation")
         if [ "$new_map" != "$cur_map" ] || [ "$new_elev" != "$cur_elev" ]; then
             echo "=== EXIT_THROUGH: transitioned to $new_map elev=$new_elev ==="
+            _end_status
             _dbg_end "exit_through" "ok" "$_ds"
             return 0
         fi
@@ -298,6 +300,7 @@ equip_and_use() {
     fi
     sleep 0.5
     wait_tick_advance 5
+    _end_status
     _dbg_end "equip_and_use" "ok" "$_ds"
 }
 
@@ -381,6 +384,7 @@ for r in results:
     done <<< "$targets"
 
     echo "=== EXPLORE_AREA: looted $looted containers, picked up $picked items ==="
+    _end_status
     if [ $((looted + picked)) -gt 0 ]; then
         local _loot_quips=("Not bad. Not bad at all." "The wasteland provides." "Shopping spree complete." "Every bit counts out here.")
         muse "${_loot_quips[$((RANDOM % ${#_loot_quips[@]}))]}"
@@ -445,6 +449,7 @@ interact() {
     cmd "{\"type\":\"use_object\",\"object_id\":$obj_id}"
     sleep 1
     wait_idle
+    _end_status
     _dbg_end "interact" "ok" "$_ds"
 }
 
@@ -465,6 +470,7 @@ use_skill() {
     fi
     sleep 1.5
     wait_idle
+    _end_status
     _dbg_end "use_skill" "ok" "$_ds"
 }
 
@@ -476,6 +482,7 @@ use_item_on() {
     cmd "{\"type\":\"use_item_on\",\"item_pid\":$item_pid,\"object_id\":$obj_id}"
     sleep 1.5
     wait_idle
+    _end_status
     _dbg_end "use_item_on" "ok" "$_ds"
 }
 
@@ -550,6 +557,7 @@ else:
     print('Nothing gained')
 ")
     echo "$gained"
+    _end_status
     _dbg_end "loot" "ok" "$_ds"
 }
 
@@ -579,6 +587,7 @@ print(f\"{hp}\t{max_hp}\t{pid}\t{name}\")
 
         if [ "$hp" -ge "$max_hp" ] 2>/dev/null; then
             echo "HP full ($hp/$max_hp)"
+            _end_status
             _dbg_end "heal_to_full" "ok" "$_ds"
             return 0
         fi

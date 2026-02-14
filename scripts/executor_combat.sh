@@ -57,6 +57,7 @@ do_combat() {
         if [ "$ctx" != "gameplay_combat" ] && [ "$ctx" != "gameplay_combat_wait" ] && [ "$ctx" != "gameplay_combat_auto" ]; then
             echo "=== COMBAT END (context: $ctx, rounds: $round, ${elapsed}s) ==="
             cmd '{"type":"auto_combat","enabled":false}'
+            _end_status
             combat_quip_sync win "$_combat_kills kills in $round rounds"
             _dbg_end "do_combat" "ok" "$_ds"
             return 0
