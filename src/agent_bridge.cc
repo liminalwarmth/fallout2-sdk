@@ -245,6 +245,34 @@ void agentDebugLogExit()
     gDebugLogLineCount = 0;
 }
 
+const char* agentCommandStatusToString(AgentCommandStatus status)
+{
+    switch (status) {
+    case AgentCommandStatus::Ok:
+        return "ok";
+    case AgentCommandStatus::NoOp:
+        return "noop";
+    case AgentCommandStatus::BadArgs:
+        return "bad_args";
+    case AgentCommandStatus::Blocked:
+        return "blocked";
+    case AgentCommandStatus::Failed:
+        return "failed";
+    case AgentCommandStatus::UnknownCommand:
+        return "unknown_cmd";
+    }
+
+    return "failed";
+}
+
+bool agentCommandStatusIsFailure(AgentCommandStatus status)
+{
+    return status == AgentCommandStatus::BadArgs
+        || status == AgentCommandStatus::Blocked
+        || status == AgentCommandStatus::Failed
+        || status == AgentCommandStatus::UnknownCommand;
+}
+
 static void debugLogWriteLine(const std::string& line)
 {
     if (gAgentDebugLog == nullptr || gDebugLogLineCount >= kDebugLogMaxLines)
@@ -260,7 +288,7 @@ static void debugLogWriteLine(const std::string& line)
 }
 
 void agentDebugLogCommand(const std::string& type, const json& cmd,
-    const std::string& result, bool isFailure,
+    const std::string& result, AgentCommandStatus status,
     const char* context)
 {
     if (gAgentDebugLog == nullptr)
@@ -272,8 +300,9 @@ void agentDebugLogCommand(const std::string& type, const json& cmd,
     entry["event"] = "cmd";
     entry["type"] = type;
     entry["context"] = context ? context : detectContext();
+    entry["status"] = agentCommandStatusToString(status);
     entry["result"] = result;
-    if (isFailure)
+    if (agentCommandStatusIsFailure(status))
         entry["failure"] = true;
 
     // Include selective args for debugging context
@@ -554,16 +583,35 @@ bool agentBridgeCheckMovieSkip()
     if (f == nullptr)
         return false;
 
-    char buf[512];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[n] = '\0';
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0) {
+        fclose(f);
+        return false;
+    }
 
-    // Look for "skip" command type in the file
-    if (strstr(buf, "\"skip\"") != nullptr) {
-        remove(kCmdPath);
-        debugPrint("AgentBridge: movie skip detected from agent_cmd.json\n");
-        return true;
+    std::string content(size, '\0');
+    size_t n = fread(&content[0], 1, size, f);
+    fclose(f);
+
+    content.resize(n);
+
+    // Parse the command envelope and only treat an actual "skip" command as skip.
+    try {
+        json doc = json::parse(content);
+        if (doc.contains("commands") && doc["commands"].is_array()) {
+            for (const auto& cmd : doc["commands"]) {
+                if (cmd.contains("type") && cmd["type"].is_string()
+                    && cmd["type"].get<std::string>() == "skip") {
+                    remove(kCmdPath);
+                    debugPrint("AgentBridge: movie skip detected from agent_cmd.json\n");
+                    return true;
+                }
+            }
+        }
+    } catch (...) {
+        // Ignore malformed files here; processCommands() handles parse failures during normal ticks.
     }
 
     return false;

@@ -900,3 +900,22 @@ print('; '.join(parts) if parts else 'empty area')
     game_log "Entered $map_name elev=$elevation — $nearby" 2>/dev/null
     echo "AUTO-NOTE: $entry"
 }
+
+# ─── Holodisk Reading ────────────────────────────────────────────────
+
+read_holodisk() {
+    local index="${1:?Usage: read_holodisk <index>  (see holodisks in state)}"
+    cmd "{\"type\":\"read_holodisk\",\"index\":$index}"
+    sleep 0.3
+    wait_tick_advance 5 || true
+    py "
+qr = d.get('query_result', {})
+if qr.get('type') != 'read_holodisk':
+    print(f\"No holodisk result (got: {qr.get('type', 'none')})\")
+elif 'error' in qr:
+    print(f\"Error: {qr['error']}\")
+else:
+    print(f\"=== {qr.get('name', '?')} ===\")
+    print(qr.get('text', '(empty)'))
+"
+}

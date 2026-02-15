@@ -57,6 +57,18 @@ extern unsigned int gAgentDialogueSelectTick; // tick when highlight was shown
 
 extern std::string gAgentLastCommandDebug;
 
+enum class AgentCommandStatus {
+    Ok,
+    NoOp,
+    BadArgs,
+    Blocked,
+    Failed,
+    UnknownCommand,
+};
+
+const char* agentCommandStatusToString(AgentCommandStatus status);
+bool agentCommandStatusIsFailure(AgentCommandStatus status);
+
 // --- Command failure counters ---
 // Tracks consecutive failures per command type. Reset on success, incremented on failure.
 extern std::map<std::string, int> gCommandFailureCounts;
@@ -94,7 +106,7 @@ extern std::string gAgentSessionId;
 void agentDebugLogInit();
 void agentDebugLogExit();
 void agentDebugLogCommand(const std::string& type, const json& cmd,
-    const std::string& result, bool isFailure,
+    const std::string& result, AgentCommandStatus status,
     const char* context = nullptr);
 void agentDebugLogStateChange(const char* event, const json& details);
 

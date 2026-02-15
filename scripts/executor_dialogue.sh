@@ -10,6 +10,7 @@ PERSONA_FILE="$GAME_DIR/persona.md"
 THOUGHT_LOG="$GAME_DIR/thought_log.md"
 PROJECT_ROOT="$(cd "$GAME_DIR/.." && pwd)"
 DEFAULT_PERSONA="$PROJECT_ROOT/docs/default-persona.md"
+DIALOGUE_HELPER="$PROJECT_ROOT/scripts/executor_dialogue_helpers.py"
 
 init_persona() {
     # Copy default persona template if none exists; create thought log header
@@ -83,19 +84,9 @@ read_persona() {
         cat "$PERSONA_FILE"
     else
         local section="$1"
-        PERSONA_PATH="$PERSONA_FILE" SECTION="$section" python3 -c "
-import re, sys, os
-with open(os.environ['PERSONA_PATH']) as f:
-    content = f.read()
-section = os.environ['SECTION']
-pattern = r'(## ' + re.escape(section) + r'\b.*?)(?=\n## |\Z)'
-m = re.search(pattern, content, re.DOTALL)
-if m:
-    print(m.group(1).strip())
-else:
-    print(f'Section \"{section}\" not found')
-    sys.exit(1)
-"
+        python3 "$DIALOGUE_HELPER" persona-section \
+            --persona "$PERSONA_FILE" \
+            --section "$section"
     fi
 }
 
@@ -121,25 +112,9 @@ evolve_persona() {
     fi
 
     # Append evolution entry to the Evolution Log section of persona file
-    PERSONA_PATH="$PERSONA_FILE" EVOLUTION_ENTRY="$evolution_entry" python3 -c "
-import os
-path = os.environ['PERSONA_PATH']
-entry = os.environ['EVOLUTION_ENTRY']
-with open(path, 'r') as f:
-    content = f.read()
-marker = '## Evolution Log'
-idx = content.find(marker)
-if idx == -1:
-    content = content.rstrip() + '\n\n## Evolution Log\n\n' + entry + '\n'
-else:
-    next_sec = content.find('\n## ', idx + len(marker))
-    if next_sec == -1:
-        content = content.rstrip() + '\n' + entry + '\n'
-    else:
-        content = content[:next_sec] + entry + '\n' + content[next_sec:]
-with open(path, 'w') as f:
-    f.write(content)
-"
+    python3 "$DIALOGUE_HELPER" persona-append-evolution \
+        --persona "$PERSONA_FILE" \
+        --entry "$evolution_entry"
 
     echo "Persona evolved: $title"
 
@@ -159,136 +134,20 @@ _dialogue_history_append() {
     # Record current dialogue node before selecting an option.
     # Args: $1 = selected option index
     local index="$1"
-    python3 -c "
-import json, os
-
-state_file = '$STATE'
-hist_file = '$DIALOGUE_HISTORY'
-
-try:
-    with open(state_file) as f:
-        d = json.load(f)
-except:
-    d = {}
-
-dlg = d.get('dialogue', {})
-reply = dlg.get('reply_text', '')[:200]
-options = dlg.get('options', [])
-idx = $index
-option_text = ''
-if idx < len(options):
-    opt = options[idx]
-    option_text = opt if isinstance(opt, str) else opt.get('text', '?')
-    option_text = option_text[:120]
-
-try:
-    with open(hist_file) as f:
-        history = json.load(f)
-except:
-    history = []
-
-history.append({
-    'reply': reply,
-    'selected': idx,
-    'option_text': option_text
-})
-
-with open(hist_file, 'w') as f:
-    json.dump(history, f)
-" 2>/dev/null
+    python3 "$DIALOGUE_HELPER" append-history \
+        --state "$STATE" \
+        --history "$DIALOGUE_HISTORY" \
+        --index "$index" \
+        2>/dev/null
 }
 
 dialogue_assess() {
     # Structured dialogue briefing — shows NPC, options, conversation history,
     # character state, active quests, sub-objectives, and reminders.
-    python3 -c "
-import json, os
-
-with open('$STATE') as f:
-    d = json.load(f)
-
-dlg = d.get('dialogue', {})
-speaker = dlg.get('speaker_name', 'Unknown')
-reply = dlg.get('reply_text', '')
-options = dlg.get('options', [])
-map_name = d.get('map', {}).get('name', '?')
-
-# NPC + Reply
-print('=== DIALOGUE ===')
-print(f'NPC: {speaker} | Map: {map_name}')
-if reply:
-    print(f'Reply: \"{reply}\"')
-if options:
-    print('Options:')
-    for i, opt in enumerate(options):
-        text = opt if isinstance(opt, str) else opt.get('text', '?')
-        print(f'  [{i}] \"{text}\"')
-print()
-
-# Conversation history
-hist_file = '$DIALOGUE_HISTORY'
-history = []
-try:
-    with open(hist_file) as f:
-        history = json.load(f)
-except:
-    pass
-if history:
-    print('--- CONVERSATION SO FAR ---')
-    for i, h in enumerate(history):
-        print(f'  ({i+1}) \"{h.get(\"reply\", \"...\")[:80]}\" -> You chose: \"{h.get(\"option_text\", \"?\")[:60]}\"')
-    print()
-
-# Character state
-ch = d.get('character', {})
-ds = ch.get('derived_stats', {})
-inv = d.get('inventory', {})
-equipped = inv.get('equipped', {})
-weapon = 'unarmed'
-for slot in ['right_hand', 'left_hand']:
-    eq = equipped.get(slot)
-    if eq:
-        weapon = eq.get('name', weapon)
-        break
-armor_eq = equipped.get('armor')
-armor = armor_eq.get('name', 'none') if armor_eq else 'none'
-caps = sum(it.get('quantity', 0) for it in inv.get('items', []) if it.get('pid') == 41)
-print('--- CHARACTER STATE ---')
-print(f'  HP: {ds.get(\"current_hp\", \"?\")}/{ds.get(\"max_hp\", \"?\")} | Level: {ch.get(\"level\", \"?\")} | Caps: {caps}')
-print(f'  Weapon: {weapon} | Armor: {armor}')
-print()
-
-# Active quests
-quests = d.get('quests', [])
-active = [q for q in quests if not q.get('completed', False)]
-if active:
-    print('--- ACTIVE QUESTS ---')
-    for q in active:
-        loc = q.get('location', '')
-        desc = q.get('description', '')
-        loc_str = f' ({loc})' if loc else ''
-        print(f'  {q.get(\"name\", \"?\")}{loc_str} -- {desc[:60]}')
-    print()
-
-# Sub-objectives
-obj_file = '$GAME_DIR/objectives.md'
-try:
-    with open(obj_file) as f:
-        objectives = [line.strip() for line in f if line.strip()]
-    if objectives:
-        print('--- SUB-OBJECTIVES ---')
-        for obj in objectives:
-            print(f'  {obj}')
-        print()
-except:
-    pass
-
-# Reminders
-print('--- REMINDERS ---')
-print('  You can RECALL knowledge: recall \"keyword\" to search notes')
-print('  You can BARTER with this NPC: select barter option or use barter command')
-print('  You can NOTE anything interesting: note \"category\" \"text\"')
-"
+    python3 "$DIALOGUE_HELPER" assess \
+        --state "$STATE" \
+        --history "$DIALOGUE_HISTORY" \
+        --objectives "$GAME_DIR/objectives.md"
 }
 
 select_option() {
@@ -322,112 +181,12 @@ select_option() {
 _dialogue_muse_generate() {
     # Generate in-character dialogue commentary using Sonnet.
     local prompt
-    prompt=$(python3 -c "
-import json, re, sys, os
-
-# Read game state
-try:
-    with open('$STATE') as f:
-        d = json.load(f)
-except:
-    sys.exit(0)
-
-dlg = d.get('dialogue', {})
-speaker = dlg.get('speaker_name', 'Unknown')
-reply = dlg.get('reply_text', '')
-options = dlg.get('options', [])
-map_name = d.get('map', {}).get('name', '?')
-
-if not reply and not options:
-    sys.exit(0)
-
-# Read persona
-name = 'Wanderer'
-persona = 'sarcastic, witty, audacious rogue with main-character energy'
-try:
-    with open('$GAME_DIR/persona.md') as f:
-        text = f.read()
-    m = re.search(r'^# (.+)', text)
-    if m:
-        name = m.group(1).strip()
-    parts = []
-    for section in ['Personality', 'Values', 'Dialogue Style']:
-        m = re.search(r'## ' + section + r'\n(.*?)(?=\n## |\Z)', text, re.DOTALL)
-        if m:
-            parts.append(m.group(1).strip())
-    if parts:
-        persona = ' | '.join(parts)
-except:
-    pass
-
-# Conversation history
-history_str = ''
-try:
-    with open('$DIALOGUE_HISTORY') as f:
-        history = json.load(f)
-    if history:
-        lines = []
-        for h in history[-5:]:
-            lines.append(f'NPC: \"{h.get(\"reply\",\"...\")[:60]}\" -> You chose: \"{h.get(\"option_text\",\"?\")[:40]}\"')
-        history_str = chr(10).join(lines)
-except:
-    pass
-
-# Options text
-opt_lines = []
-for i, opt in enumerate(options):
-    text = opt if isinstance(opt, str) else opt.get('text', '?')
-    opt_lines.append(f'[{i}] \"{text}\"')
-options_str = chr(10).join(opt_lines)
-
-# Character state
-ch = d.get('character', {})
-ds = ch.get('derived_stats', {})
-inv = d.get('inventory', {})
-equipped = inv.get('equipped', {})
-weapon = 'unarmed'
-for slot in ['right_hand', 'left_hand']:
-    eq = equipped.get(slot)
-    if eq:
-        weapon = eq.get('name', weapon)
-        break
-armor_eq = equipped.get('armor')
-armor = armor_eq.get('name', 'none') if armor_eq else 'none'
-caps = sum(it.get('quantity', 0) for it in inv.get('items', []) if it.get('pid') == 41)
-
-# Active quests
-quests = d.get('quests', [])
-active = [q for q in quests if not q.get('completed', False)]
-quest_str = ', '.join(q.get('name', '?') for q in active[:5]) if active else 'none'
-
-# Sub-objectives
-obj_str = 'none'
-try:
-    with open('$GAME_DIR/objectives.md') as f:
-        objectives = [line.strip() for line in f if line.strip()]
-    if objectives:
-        obj_str = ', '.join(objectives[:5])
-except:
-    pass
-
-hist_block = f'Conversation so far:\\n{history_str}' if history_str else 'This is the start of the conversation.'
-
-prompt = f'''You are {name}. Voice: {persona}
-
-Talking to {speaker} in {map_name}.
-{hist_block}
-Current NPC reply: \"{reply[:200]}\"
-Your options:
-{options_str}
-
-Your quests: {quest_str}
-Your goals right now: {obj_str}
-Your state: HP {ds.get('current_hp','?')}/{ds.get('max_hp','?')}, Caps {caps}, wearing {armor}, wielding {weapon}
-
-Write a short in-character inner thought (under 25 words) reacting to these dialogue options. What catches your eye? What matters given your goals? No quotes, no narration.'''
-
-print(prompt)
-" 2>/dev/null)
+    prompt=$(python3 "$DIALOGUE_HELPER" muse-prompt \
+        --state "$STATE" \
+        --history "$DIALOGUE_HISTORY" \
+        --persona "$GAME_DIR/persona.md" \
+        --objectives "$GAME_DIR/objectives.md" \
+        2>/dev/null)
 
     [ -z "$prompt" ] && return
 
@@ -500,17 +259,35 @@ else:
     print(f\"Player caps: {b.get('player_caps', 0)} | Merchant caps: {b.get('merchant_caps', 0)}\")
     ti = b.get('trade_info', {})
     if ti:
-        print(f\"Offer value: {ti.get('player_offer_value', 0)} | Merchant wants: {ti.get('merchant_wants', 0)}\")
+        succ = ' OK' if ti.get('trade_will_succeed') else ' NEED MORE'
+        print(f\"Offer value: {ti.get('player_offer_value', 0)} | Merchant wants: {ti.get('merchant_wants', 0)}{succ}\")
+    def item_detail(i):
+        s = f\"{i.get('name','?')} x{i.get('quantity',1)} pid={i.get('pid')} cost={i.get('cost',0)}\"
+        ws = i.get('weapon_stats')
+        if ws:
+            s += f\" [dmg:{ws.get('damage_min',0)}-{ws.get('damage_max',0)} range:{ws.get('range_primary','?')} AP:{ws.get('ap_cost_primary','?')}]\"
+        ars = i.get('armor_stats')
+        if ars:
+            s += f\" [AC:{ars.get('armor_class',0)} DR:{ars.get('damage_resistance',{}).get('normal',0)}%]\"
+        ams = i.get('ammo_stats')
+        if ams:
+            s += f\" [cal:{ams.get('caliber',0)} dmgMul:{ams.get('damage_multiplier',1)}/{ams.get('damage_divisor',1)}]\"
+        return s
+    mi = b.get('merchant_inventory', [])
+    if mi:
+        print(f'Merchant inventory ({len(mi)} items):')
+        for i in mi:
+            print(f'  {item_detail(i)}')
     po = b.get('player_offer', [])
     mo = b.get('merchant_offer', [])
     if po:
         print('Player offer:')
         for i in po:
-            print(f\"  {i.get('name','?')} x{i.get('quantity',1)} pid={i.get('pid')}\")
+            print(f'  {item_detail(i)}')
     if mo:
         print('Merchant offer:')
         for i in mo:
-            print(f\"  {i.get('name','?')} x{i.get('quantity',1)} pid={i.get('pid')}\")
+            print(f'  {item_detail(i)}')
 "
 }
 
@@ -586,21 +363,9 @@ post_dialogue_hook() {
     # Build conversation summary from history if available
     local summary=""
     if [ -f "$DIALOGUE_HISTORY" ]; then
-        summary=$(python3 -c "
-import json
-try:
-    with open('$DIALOGUE_HISTORY') as f:
-        history = json.load(f)
-    if history:
-        lines = []
-        for h in history:
-            r = h.get('reply', '')[:80]
-            o = h.get('option_text', '')[:60]
-            lines.append(f'  NPC: \"{r}\" -> Chose: \"{o}\"')
-        print('\n'.join(lines))
-except:
-    pass
-" 2>/dev/null)
+        summary=$(python3 "$DIALOGUE_HELPER" history-summary \
+            --history "$DIALOGUE_HISTORY" \
+            2>/dev/null)
     fi
 
     if [ -n "$summary" ]; then

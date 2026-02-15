@@ -87,7 +87,7 @@ def main():
     # Dialogue details
     if "dialogue" in str(ctx):
         dialog = d.get("dialogue", {})
-        npc = dialog.get("npc_name", "?")
+        npc = dialog.get("speaker_name", "?")
         options = dialog.get("options", [])
         parts.append(f"NPC:{npc}")
         parts.append(f"options:{len(options)}")

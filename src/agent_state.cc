@@ -72,28 +72,38 @@ std::string safeString(const char* str)
                 result += '?';
             }
             p++;
-        } else if ((*p & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
-            // 2-byte UTF-8
-            result += static_cast<char>(p[0]);
-            result += static_cast<char>(p[1]);
-            p += 2;
-        } else if ((*p & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
-            // 3-byte UTF-8
-            result += static_cast<char>(p[0]);
-            result += static_cast<char>(p[1]);
-            result += static_cast<char>(p[2]);
-            p += 3;
-        } else if ((*p & 0xF8) == 0xF0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
-            // 4-byte UTF-8
-            result += static_cast<char>(p[0]);
-            result += static_cast<char>(p[1]);
-            result += static_cast<char>(p[2]);
-            result += static_cast<char>(p[3]);
-            p += 4;
         } else {
-            // Invalid byte — replace with '?'
-            result += '?';
-            p++;
+            int length = 0;
+            if ((*p & 0xE0) == 0xC0) {
+                length = 2;
+            } else if ((*p & 0xF0) == 0xE0) {
+                length = 3;
+            } else if ((*p & 0xF8) == 0xF0) {
+                length = 4;
+            } else {
+                result += '?';
+                p++;
+                continue;
+            }
+
+            bool valid = true;
+            for (int i = 1; i < length; i++) {
+                if (p[i] == '\0' || (p[i] & 0xC0) != 0x80) {
+                    valid = false;
+                    break;
+                }
+            }
+
+            if (!valid) {
+                result += '?';
+                p++;
+                continue;
+            }
+
+            for (int i = 0; i < length; i++) {
+                result += static_cast<char>(p[i]);
+            }
+            p += length;
         }
     }
     return result;
@@ -759,6 +769,54 @@ static void writeCharacterStats(json& state)
     state["character"] = character;
 }
 
+// --- Shared item detail stats helper ---
+
+static void writeItemDetailStats(json& entry, Object* item, int iType)
+{
+    if (iType == ITEM_TYPE_WEAPON) {
+        json ws;
+        int minDmg = 0, maxDmg = 0;
+        weaponGetDamageMinMax(item, &minDmg, &maxDmg);
+        ws["damage_min"] = minDmg;
+        ws["damage_max"] = maxDmg;
+        ws["damage_type"] = damageTypeToString(weaponGetDamageType(nullptr, item));
+        ws["ap_cost_primary"] = weaponGetPrimaryActionPointCost(item);
+        ws["ap_cost_secondary"] = weaponGetSecondaryActionPointCost(item);
+        Proto* wProto = nullptr;
+        if (protoGetProto(item->pid, &wProto) == 0 && wProto != nullptr) {
+            ws["range_primary"] = wProto->item.data.weapon.maxRange1;
+            ws["range_secondary"] = wProto->item.data.weapon.maxRange2;
+        }
+        ws["min_strength"] = weaponGetMinStrengthRequired(item);
+        int caliber = ammoGetCaliber(item);
+        if (caliber > 0) {
+            ws["ammo_caliber"] = caliber;
+            ws["ammo_capacity"] = ammoGetCapacity(item);
+            ws["ammo_count"] = ammoGetQuantity(item);
+        }
+        entry["weapon_stats"] = ws;
+    } else if (iType == ITEM_TYPE_ARMOR) {
+        json as;
+        as["armor_class"] = armorGetArmorClass(item);
+        json dr, dt;
+        for (int t = 0; t < DAMAGE_TYPE_COUNT; t++) {
+            dr[damageTypeToString(t)] = armorGetDamageResistance(item, t);
+            dt[damageTypeToString(t)] = armorGetDamageThreshold(item, t);
+        }
+        as["damage_resistance"] = dr;
+        as["damage_threshold"] = dt;
+        entry["armor_stats"] = as;
+    } else if (iType == ITEM_TYPE_AMMO) {
+        json ams;
+        ams["caliber"] = ammoGetCaliber(item);
+        ams["ac_modifier"] = ammoGetArmorClassModifier(item);
+        ams["dr_modifier"] = ammoGetDamageResistanceModifier(item);
+        ams["damage_multiplier"] = ammoGetDamageMultiplier(item);
+        ams["damage_divisor"] = ammoGetDamageDivisor(item);
+        entry["ammo_stats"] = ams;
+    }
+}
+
 // --- Inventory state ---
 
 static void writeInventoryState(json& state)
@@ -799,50 +857,7 @@ static void writeInventoryState(json& state)
 
         // Detailed stats by item type
         int iType = itemGetType(item);
-        if (iType == ITEM_TYPE_WEAPON) {
-            json ws;
-            int minDmg = 0, maxDmg = 0;
-            weaponGetDamageMinMax(item, &minDmg, &maxDmg);
-            ws["damage_min"] = minDmg;
-            ws["damage_max"] = maxDmg;
-            ws["damage_type"] = damageTypeToString(weaponGetDamageType(nullptr, item));
-            ws["ap_cost_primary"] = weaponGetPrimaryActionPointCost(item);
-            ws["ap_cost_secondary"] = weaponGetSecondaryActionPointCost(item);
-            // Read range from proto directly — weaponGetRange() uses the critter's
-            // equipped weapon, not the item being inspected.
-            Proto* wProto = nullptr;
-            if (protoGetProto(item->pid, &wProto) == 0 && wProto != nullptr) {
-                ws["range_primary"] = wProto->item.data.weapon.maxRange1;
-                ws["range_secondary"] = wProto->item.data.weapon.maxRange2;
-            }
-            ws["min_strength"] = weaponGetMinStrengthRequired(item);
-            int caliber = ammoGetCaliber(item);
-            if (caliber > 0) {
-                ws["ammo_caliber"] = caliber;
-                ws["ammo_capacity"] = ammoGetCapacity(item);
-                ws["ammo_count"] = ammoGetQuantity(item);
-            }
-            entry["weapon_stats"] = ws;
-        } else if (iType == ITEM_TYPE_ARMOR) {
-            json as;
-            as["armor_class"] = armorGetArmorClass(item);
-            json dr, dt;
-            for (int t = 0; t < DAMAGE_TYPE_COUNT; t++) {
-                dr[damageTypeToString(t)] = armorGetDamageResistance(item, t);
-                dt[damageTypeToString(t)] = armorGetDamageThreshold(item, t);
-            }
-            as["damage_resistance"] = dr;
-            as["damage_threshold"] = dt;
-            entry["armor_stats"] = as;
-        } else if (iType == ITEM_TYPE_AMMO) {
-            json ams;
-            ams["caliber"] = ammoGetCaliber(item);
-            ams["ac_modifier"] = ammoGetArmorClassModifier(item);
-            ams["dr_modifier"] = ammoGetDamageResistanceModifier(item);
-            ams["damage_multiplier"] = ammoGetDamageMultiplier(item);
-            ams["damage_divisor"] = ammoGetDamageDivisor(item);
-            entry["ammo_stats"] = ams;
-        }
+        writeItemDetailStats(entry, item, iType);
 
         items.push_back(entry);
     }
@@ -1438,6 +1453,52 @@ static void writeDialogueState(json& state)
     }
     dialogue["options"] = options;
 
+    // Barter preview: check if NPC can barter
+    if (gGameDialogSpeaker != nullptr) {
+        Proto* speakerProto = nullptr;
+        if (protoGetProto(gGameDialogSpeaker->pid, &speakerProto) == 0 && speakerProto != nullptr) {
+            bool canBarter = (speakerProto->critter.data.flags & CRITTER_BARTER) != 0;
+            dialogue["can_barter"] = canBarter;
+
+            if (canBarter) {
+                json summary;
+                int totalItems = 0;
+                int totalValue = 0;
+                int weaponCount = 0, armorCount = 0, ammoCount = 0, drugCount = 0, miscCount = 0;
+
+                Inventory* merchInv = &gGameDialogSpeaker->data.inventory;
+                for (int i = 0; i < merchInv->length; i++) {
+                    InventoryItem* invItem = &merchInv->items[i];
+                    Object* item = invItem->item;
+                    if (item == nullptr)
+                        continue;
+
+                    totalItems += invItem->quantity;
+                    totalValue += itemGetCost(item) * invItem->quantity;
+
+                    switch (itemGetType(item)) {
+                    case ITEM_TYPE_WEAPON: weaponCount += invItem->quantity; break;
+                    case ITEM_TYPE_ARMOR: armorCount += invItem->quantity; break;
+                    case ITEM_TYPE_AMMO: ammoCount += invItem->quantity; break;
+                    case ITEM_TYPE_DRUG: drugCount += invItem->quantity; break;
+                    default: miscCount += invItem->quantity; break;
+                    }
+                }
+
+                summary["total_items"] = totalItems;
+                summary["total_value"] = totalValue;
+                summary["merchant_caps"] = itemGetTotalCaps(gGameDialogSpeaker);
+                if (weaponCount > 0) summary["weapons"] = weaponCount;
+                if (armorCount > 0) summary["armor"] = armorCount;
+                if (ammoCount > 0) summary["ammo"] = ammoCount;
+                if (drugCount > 0) summary["drugs"] = drugCount;
+                if (miscCount > 0) summary["misc"] = miscCount;
+
+                dialogue["merchant_inventory_summary"] = summary;
+            }
+        }
+    }
+
     state["dialogue"] = dialogue;
 }
 
@@ -1564,8 +1625,10 @@ static void writeBarterState(json& state)
             char* iName = itemGetName(item);
             entry["name"] = safeString(iName);
             entry["quantity"] = invItem->quantity;
-            entry["type"] = itemTypeToString(itemGetType(item));
+            int iType = itemGetType(item);
+            entry["type"] = itemTypeToString(iType);
             entry["cost"] = itemGetCost(item);
+            writeItemDetailStats(entry, item, iType);
             merchantItems.push_back(entry);
         }
         barter["merchant_inventory"] = merchantItems;
@@ -1588,6 +1651,7 @@ static void writeBarterState(json& state)
             entry["name"] = safeString(iName);
             entry["quantity"] = invItem->quantity;
             entry["cost"] = itemGetCost(item);
+            writeItemDetailStats(entry, item, itemGetType(item));
             playerOffer.push_back(entry);
         }
         barter["player_offer"] = playerOffer;
@@ -1610,6 +1674,7 @@ static void writeBarterState(json& state)
             entry["name"] = safeString(iName);
             entry["quantity"] = invItem->quantity;
             entry["cost"] = itemGetCost(item);
+            writeItemDetailStats(entry, item, itemGetType(item));
             merchantOffer.push_back(entry);
         }
         barter["merchant_offer"] = merchantOffer;
@@ -1838,6 +1903,7 @@ static void writeQuestState(json& state)
         if (gameGetGlobalVar(gvar) != 0) {
             const char* name = agentGetHolodiskName(i);
             json h;
+            h["index"] = i;
             h["name"] = safeString(name);
             holodisks.push_back(h);
         }
@@ -1881,6 +1947,13 @@ static void writeGameplayState(json& state, const char* context)
         state["settings"] = s;
     }
 
+    // Can-rest status (all non-combat gameplay contexts)
+    if (strcmp(context, "gameplay_combat") != 0
+        && strcmp(context, "gameplay_combat_wait") != 0
+        && strcmp(context, "gameplay_combat_auto") != 0) {
+        state["can_rest"] = _critter_can_obj_dude_rest();
+    }
+
     // World map is a special context — only character + worldmap + party + messages + quests state
     if (strcmp(context, "gameplay_worldmap") == 0) {
         writeCharacterStats(state);
@@ -1908,6 +1981,7 @@ static void writeGameplayState(json& state, const char* context)
 
     // Context-specific additions
     if (strcmp(context, "gameplay_combat") == 0
+        || strcmp(context, "gameplay_combat_wait") == 0
         || strcmp(context, "gameplay_combat_auto") == 0) {
         writeCombatState(state);
     } else if (strcmp(context, "gameplay_dialogue") == 0) {

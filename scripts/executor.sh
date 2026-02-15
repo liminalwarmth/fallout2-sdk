@@ -177,7 +177,8 @@ set -uo pipefail
 
 # Resolve repo root — works in both bash (BASH_SOURCE) and zsh ($0)
 _executor_src="${BASH_SOURCE[0]:-$0}"
-GAME_DIR="${FALLOUT2_GAME_DIR:-$(cd "$(dirname "$_executor_src")/.." && pwd)/game}"
+REPO_ROOT="$(cd "$(dirname "$_executor_src")/.." && pwd)"
+GAME_DIR="${FALLOUT2_GAME_DIR:-$REPO_ROOT/game}"
 unset _executor_src
 STATE="$GAME_DIR/agent_state.json"
 CMD="$GAME_DIR/agent_cmd.json"
@@ -453,6 +454,9 @@ if char.get('can_level_up'):
 usp = char.get('unspent_skill_points', 0)
 if usp and ctx != 'character_editor':
     extra += f' SP:{usp}'
+can_rest = d.get('can_rest')
+if can_rest is not None:
+    extra += ' REST:ok' if can_rest else ' REST:no'
 print(f\"HP:{hp}/{max_hp} Lv:{lvl} Tile:{tile} {m.get('name','?')} {ctx} [{obj_str}]{extra}\")
 "
 }
@@ -550,6 +554,10 @@ if total_s > 0: beyond.append(f'{total_s} scenery')
 if total_g > 0: beyond.append(f'{total_g} ground items')
 if beyond:
     print(f'(Beyond {MAX_DIST} tiles: {chr(44).join(beyond)} — use look_around <dist> to expand)')
+
+can_rest = d.get('can_rest')
+if can_rest is not None:
+    print(f\"REST: {'safe' if can_rest else 'unsafe (hostiles nearby)'}\")
 "
 }
 
@@ -784,6 +792,20 @@ debug_timeline() {
     debug_tail all "$n"
 }
 
+schema_check() {
+    # Validate key bridge-state contracts consumed by executor scripts.
+    if [ ! -f "$STATE" ]; then
+        echo "No state file at $STATE (game not running?)"
+        return 1
+    fi
+    python3 "$REPO_ROOT/scripts/check_state_schema.py" --state "$STATE"
+}
+
+bridge_drift_check() {
+    # Compare top-level bridge sources with engine mirror copies.
+    "$REPO_ROOT/scripts/check_bridge_source_drift.sh" "$@"
+}
+
 debug_last_failure() {
     # Find the most recent failure event across all debug logs.
     if [ ! -d "$DEBUG_DIR" ]; then echo "No debug directory (game not running?)"; return 1; fi
@@ -803,8 +825,10 @@ for fpath in files:
             if not line: continue
             try:
                 entry = json.loads(line)
+                status = entry.get('status')
                 is_fail = (
-                    entry.get('failure') == True
+                    status in ('bad_args', 'blocked', 'failed', 'unknown_cmd')
+                    or entry.get('failure') == True
                     or entry.get('result') in ('timeout', 'fail', 'stuck', 'no_path', 'blocked', 'no_exits', 'no_items', 'no_loot_ctx', 'no_dialogue', 'bad_args')
                     or any(w in str(entry.get('result', '')) for w in ('BLOCKED', 'failed', 'not found'))
                 )
@@ -835,6 +859,8 @@ executor_help() {
     echo ""
     echo "SURVEY (read game state):"
     echo "  status                          — compact one-liner (HP, tile, map, context)"
+    echo "  schema_check                    — validate agent_state schema contracts"
+    echo "  bridge_drift_check [--sync]     — check/sync src vs engine bridge mirrors"
     echo "  look_around                     — nearby objects by category"
     echo "  inventory                       — equipped + inventory list"
     echo "  examine <id>                    — auto-walk + examine object"
@@ -872,6 +898,7 @@ executor_help() {
     echo "  tile_objects <tile> [radius]    — inspect objects near tile"
     echo "  find_item <pid>                 — locate PID across map/inventory"
     echo "  list_all_items                  — sample items/containers on elevation"
+    echo "  read_holodisk <index>           — read full text of acquired holodisk"
     echo ""
     echo "DIALOGUE:"
     echo "  dialogue_assess                 — structured briefing (NPC, options, quests)"

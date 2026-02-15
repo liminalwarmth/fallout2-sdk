@@ -381,45 +381,6 @@ static const char* safeName(Object* obj)
     return name ? name : "(unnamed)";
 }
 
-// Sanitize C string to valid UTF-8 for JSON fields (same behavior as state writer).
-static std::string safeJsonString(const char* str)
-{
-    if (str == nullptr)
-        return "";
-
-    std::string result;
-    const unsigned char* p = reinterpret_cast<const unsigned char*>(str);
-    while (*p) {
-        if (*p < 0x80) {
-            if (*p >= 0x20 || *p == '\n' || *p == '\t') {
-                result += static_cast<char>(*p);
-            } else {
-                result += '?';
-            }
-            p++;
-        } else if ((*p & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
-            result += static_cast<char>(p[0]);
-            result += static_cast<char>(p[1]);
-            p += 2;
-        } else if ((*p & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
-            result += static_cast<char>(p[0]);
-            result += static_cast<char>(p[1]);
-            result += static_cast<char>(p[2]);
-            p += 3;
-        } else if ((*p & 0xF8) == 0xF0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
-            result += static_cast<char>(p[0]);
-            result += static_cast<char>(p[1]);
-            result += static_cast<char>(p[2]);
-            result += static_cast<char>(p[3]);
-            p += 4;
-        } else {
-            result += '?';
-            p++;
-        }
-    }
-    return result;
-}
-
 // --- Look-at capture callback ---
 // Used by _obj_examine_func to capture description text directly
 static std::string gLookAtCaptureBuffer;
@@ -477,8 +438,8 @@ void processPendingAttacks()
 
     char buf[256];
     snprintf(buf, sizeof(buf),
-        "attack(queued %d left): target=%lu hitMode=%d hitLoc=%d ap=%d dist=%d rc=%d",
-        (int)gPendingAttacks.size(), (unsigned long)atk.targetId,
+        "attack(queued %d left): target=%llu hitMode=%d hitLoc=%d ap=%d dist=%d rc=%d",
+        (int)gPendingAttacks.size(), (unsigned long long)atk.targetId,
         atk.hitMode, atk.hitLocation, ap, dist, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
@@ -500,38 +461,40 @@ int getPendingAttackCount()
 
 // --- Character creation handlers ---
 
-static void handleSetName(const json& cmd)
+static AgentCommandStatus handleSetName(const json& cmd)
 {
     if (!cmd.contains("name") || !cmd["name"].is_string()) {
         debugPrint("AgentBridge: set_name missing 'name'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     std::string name = cmd["name"].get<std::string>();
     if (name.empty() || name.length() > 32) {
         debugPrint("AgentBridge: set_name invalid length (%zu)\n", name.length());
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     dudeSetName(name.c_str());
     debugPrint("AgentBridge: set_name applied '%s'\n", name.c_str());
+    return AgentCommandStatus::Ok;
 }
 
-static void handleFinishCharacterCreation()
+static AgentCommandStatus handleFinishCharacterCreation()
 {
     KeyboardData data;
     data.key = SDL_SCANCODE_RETURN;
     data.down = 1;
     _kb_simulate_key(&data);
     debugPrint("AgentBridge: finish_character_creation (injected RETURN)\n");
+    return AgentCommandStatus::Ok;
 }
 
-static void handleAdjustStat(const json& cmd)
+static AgentCommandStatus handleAdjustStat(const json& cmd)
 {
     if (!cmd.contains("stat") || !cmd["stat"].is_string()
         || !cmd.contains("direction") || !cmd["direction"].is_string()) {
         debugPrint("AgentBridge: adjust_stat missing 'stat' or 'direction'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     std::string statName = cmd["stat"].get<std::string>();
@@ -540,7 +503,7 @@ static void handleAdjustStat(const json& cmd)
     auto it = gStatNameToId.find(statName);
     if (it == gStatNameToId.end()) {
         debugPrint("AgentBridge: adjust_stat unknown stat '%s'\n", statName.c_str());
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int statId = it->second;
@@ -554,84 +517,116 @@ static void handleAdjustStat(const json& cmd)
 
     debugPrint("AgentBridge: adjust_stat '%s' %s (injected button event)\n",
         statName.c_str(), direction.c_str());
+    return AgentCommandStatus::Ok;
 }
 
-static void handleToggleTrait(const json& cmd)
+static AgentCommandStatus handleToggleTrait(const json& cmd)
 {
     if (!cmd.contains("trait") || !cmd["trait"].is_string()) {
         debugPrint("AgentBridge: toggle_trait missing 'trait'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     std::string traitName = cmd["trait"].get<std::string>();
     auto it = gTraitNameToId.find(traitName);
     if (it == gTraitNameToId.end()) {
         debugPrint("AgentBridge: toggle_trait unknown trait '%s'\n", traitName.c_str());
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int traitId = it->second;
     enqueueInputEvent(CHAR_EDITOR_TRAIT_BASE + traitId);
     debugPrint("AgentBridge: toggle_trait '%s' (injected button event)\n", traitName.c_str());
+    return AgentCommandStatus::Ok;
 }
 
-static void handleToggleSkillTag(const json& cmd)
+static AgentCommandStatus handleToggleSkillTag(const json& cmd)
 {
     if (!cmd.contains("skill") || !cmd["skill"].is_string()) {
         debugPrint("AgentBridge: toggle_skill_tag missing 'skill'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     std::string skillName = cmd["skill"].get<std::string>();
     auto it = gSkillNameToId.find(skillName);
     if (it == gSkillNameToId.end()) {
         debugPrint("AgentBridge: toggle_skill_tag unknown skill '%s'\n", skillName.c_str());
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int skillId = it->second;
     enqueueInputEvent(CHAR_EDITOR_SKILL_TAG_BASE + skillId);
     debugPrint("AgentBridge: toggle_skill_tag '%s' (injected button event)\n", skillName.c_str());
+    return AgentCommandStatus::Ok;
 }
 
 // --- Menu handlers ---
 
-static void handleMainMenuSelect(const json& cmd)
+static AgentCommandStatus handleMainMenuOption(const std::string& option, const json* cmd = nullptr)
 {
-    if (!cmd.contains("option") || !cmd["option"].is_string()) {
-        debugPrint("AgentBridge: main_menu_select missing 'option'\n");
-        return;
+    if (option == "new_game") {
+        gAgentMainMenuAction = 1;
+        return AgentCommandStatus::Ok;
     }
 
-    std::string option = cmd["option"].get<std::string>();
+    if (option == "load_game") {
+        gAgentMainMenuAction = 2;
+        if (cmd != nullptr && cmd->contains("slot") && (*cmd)["slot"].is_number_integer()) {
+            gAgentPendingLoadSlot = (*cmd)["slot"].get<int>();
+        }
+        return AgentCommandStatus::Ok;
+    }
 
-    static const std::unordered_map<std::string, int> optionToScancode = {
-        { "new_game", SDL_SCANCODE_N },
-        { "load_game", SDL_SCANCODE_L },
+    if (option == "options") {
+        gAgentMainMenuAction = 3;
+        return AgentCommandStatus::Ok;
+    }
+
+    if (option == "exit") {
+        gAgentMainMenuAction = 4;
+        return AgentCommandStatus::Ok;
+    }
+
+    static const std::unordered_map<std::string, int> keyOptions = {
         { "intro", SDL_SCANCODE_I },
-        { "options", SDL_SCANCODE_O },
         { "credits", SDL_SCANCODE_C },
-        { "exit", SDL_SCANCODE_E },
     };
 
-    auto it = optionToScancode.find(option);
-    if (it == optionToScancode.end()) {
-        debugPrint("AgentBridge: main_menu_select unknown option '%s'\n", option.c_str());
-        return;
+    auto it = keyOptions.find(option);
+    if (it == keyOptions.end()) {
+        return AgentCommandStatus::BadArgs;
     }
 
     KeyboardData data;
     data.key = it->second;
     data.down = 1;
     _kb_simulate_key(&data);
-    debugPrint("AgentBridge: main_menu_select '%s'\n", option.c_str());
+    return AgentCommandStatus::Ok;
 }
 
-static void handleCharSelectorSelect(const json& cmd)
+static AgentCommandStatus handleMainMenuSelect(const json& cmd)
+{
+    if (!cmd.contains("option") || !cmd["option"].is_string()) {
+        debugPrint("AgentBridge: main_menu_select missing 'option'\n");
+        return AgentCommandStatus::BadArgs;
+    }
+
+    std::string option = cmd["option"].get<std::string>();
+    AgentCommandStatus status = handleMainMenuOption(option);
+    if (status != AgentCommandStatus::Ok) {
+        debugPrint("AgentBridge: main_menu_select unknown option '%s'\n", option.c_str());
+        return status;
+    }
+
+    debugPrint("AgentBridge: main_menu_select '%s'\n", option.c_str());
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleCharSelectorSelect(const json& cmd)
 {
     if (!cmd.contains("option") || !cmd["option"].is_string()) {
         debugPrint("AgentBridge: char_selector_select missing 'option'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     std::string option = cmd["option"].get<std::string>();
@@ -640,13 +635,15 @@ static void handleCharSelectorSelect(const json& cmd)
         { "create_custom", SDL_SCANCODE_C },
         { "take_premade", SDL_SCANCODE_T },
         { "modify_premade", SDL_SCANCODE_M },
+        { "next", SDL_SCANCODE_RIGHT },
+        { "previous", SDL_SCANCODE_LEFT },
         { "back", SDL_SCANCODE_B },
     };
 
     auto it = optionToScancode.find(option);
     if (it == optionToScancode.end()) {
         debugPrint("AgentBridge: char_selector_select unknown option '%s'\n", option.c_str());
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     KeyboardData data;
@@ -654,6 +651,28 @@ static void handleCharSelectorSelect(const json& cmd)
     data.down = 1;
     _kb_simulate_key(&data);
     debugPrint("AgentBridge: char_selector_select '%s'\n", option.c_str());
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleMainMenuCommand(const json& cmd)
+{
+    if (!cmd.contains("action") || !cmd["action"].is_string()) {
+        gAgentLastCommandDebug = "main_menu: missing 'action'";
+        debugPrint("AgentBridge: main_menu missing 'action'\n");
+        return AgentCommandStatus::BadArgs;
+    }
+
+    std::string action = cmd["action"].get<std::string>();
+    AgentCommandStatus status = handleMainMenuOption(action, &cmd);
+    if (status == AgentCommandStatus::Ok) {
+        gAgentLastCommandDebug = "main_menu: " + action;
+        debugPrint("AgentBridge: main_menu action=%s\n", action.c_str());
+    } else {
+        gAgentLastCommandDebug = "main_menu: unknown action '" + action + "'";
+        debugPrint("AgentBridge: main_menu unknown action '%s'\n", action.c_str());
+    }
+
+    return status;
 }
 
 // --- Exploration commands ---
@@ -725,12 +744,12 @@ void agentProcessQueuedMovement()
     }
 }
 
-static void handleMoveTo(const json& cmd, bool run)
+static AgentCommandStatus handleMoveTo(const json& cmd, bool run)
 {
     if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
         gAgentLastCommandDebug = std::string(run ? "run_to" : "move_to") + ": missing 'tile'";
         debugPrint("AgentBridge: move_to/run_to missing 'tile'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int tile = cmd["tile"].get<int>();
@@ -741,7 +760,7 @@ static void handleMoveTo(const json& cmd, bool run)
         snprintf(buf, sizeof(buf), "%s: tile=%d rejected (in combat — use combat_move)", run ? "run_to" : "move_to", tile);
         gAgentLastCommandDebug = buf;
         debugPrint("AgentBridge: %s rejected — in combat\n", run ? "run_to" : "move_to");
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     // Cancel any existing queued movement
@@ -752,7 +771,7 @@ static void handleMoveTo(const json& cmd, bool run)
         snprintf(buf, sizeof(buf), "%s: tile=%d skipped (animation busy)", run ? "run_to" : "move_to", tile);
         gAgentLastCommandDebug = buf;
         debugPrint("AgentBridge: move_to/run_to skipped — animation busy\n");
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     // Check path length first
@@ -764,7 +783,7 @@ static void handleMoveTo(const json& cmd, bool run)
         snprintf(buf, sizeof(buf), "%s: tile=%d no path from %d", run ? "run_to" : "move_to", tile, gDude->tile);
         gAgentLastCommandDebug = buf;
         debugPrint("AgentBridge: move_to/run_to no path\n");
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     // For long paths, break into waypoints and queue them
@@ -794,14 +813,14 @@ static void handleMoveTo(const json& cmd, bool run)
         gAgentLastCommandDebug = buf;
         debugPrint("AgentBridge: %s to tile %d (queued %d waypoints)\n",
             run ? "run_to" : "move_to", tile, waypointCount);
-        return;
+        return AgentCommandStatus::Ok;
     }
 
     // Short path — direct movement
     if (reg_anim_begin(ANIMATION_REQUEST_RESERVED) != 0) {
         gAgentLastCommandDebug = std::string(run ? "run_to" : "move_to") + ": reg_anim_begin failed";
         debugPrint("AgentBridge: move_to/run_to reg_anim_begin failed\n");
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int result;
@@ -817,7 +836,7 @@ static void handleMoveTo(const json& cmd, bool run)
         gAgentLastCommandDebug = buf;
         debugPrint("AgentBridge: move_to/run_to register failed\n");
         reg_anim_end();
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     reg_anim_end();
@@ -829,25 +848,26 @@ static void handleMoveTo(const json& cmd, bool run)
     snprintf(buf, sizeof(buf), "%s: tile=%d from=%d", run ? "run_to" : "move_to", tile, gDude->tile);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s to tile %d\n", run ? "run_to" : "move_to", tile);
+    return AgentCommandStatus::Ok;
 }
 
-static void handleUseObject(const json& cmd)
+static AgentCommandStatus handleUseObject(const json& cmd)
 {
     if (!cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
         debugPrint("AgentBridge: use_object missing 'object_id'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (animationIsBusy(gDude)) {
         debugPrint("AgentBridge: use_object skipped — animation busy\n");
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     uintptr_t objId = cmd["object_id"].get<uintptr_t>();
     Object* target = findObjectByUniqueId(objId);
     if (target == nullptr) {
-        debugPrint("AgentBridge: use_object object %d not found\n", objId);
-        return;
+        debugPrint("AgentBridge: use_object object %llu not found\n", (unsigned long long)objId);
+        return AgentCommandStatus::Failed;
     }
 
     _action_use_an_object(gDude, target);
@@ -855,36 +875,37 @@ static void handleUseObject(const json& cmd)
     snprintf(buf, sizeof(buf), "use_object: id=%llu name=%s", (unsigned long long)objId, safeName(target));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: use_object on %llu\n", (unsigned long long)objId);
+    return AgentCommandStatus::Ok;
 }
 
-static void handleOpenDoor(const json& cmd)
+static AgentCommandStatus handleOpenDoor(const json& cmd)
 {
     if (!gAgentTestMode) {
         gAgentLastCommandDebug = "open_door: BLOCKED — test mode disabled (use use_object instead)";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     if (!cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
         gAgentLastCommandDebug = "open_door: missing object_id";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     uintptr_t objId = cmd["object_id"].get<uintptr_t>();
     Object* door = findObjectByUniqueId(objId);
     if (door == nullptr) {
         gAgentLastCommandDebug = "open_door: object " + std::to_string(objId) + " not found";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     // Verify it's a door
     if (PID_TYPE(door->pid) != OBJ_TYPE_SCENERY) {
         gAgentLastCommandDebug = "open_door: not a scenery object";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
     Proto* proto;
     if (protoGetProto(door->pid, &proto) == -1 || proto->scenery.type != SCENERY_TYPE_DOOR) {
         gAgentLastCommandDebug = "open_door: not a door";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     // Check distance (must be adjacent)
@@ -893,17 +914,17 @@ static void handleOpenDoor(const json& cmd)
         char buf[128];
         snprintf(buf, sizeof(buf), "open_door: too far (dist=%d, need <=1)", dist);
         gAgentLastCommandDebug = buf;
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     if (objectIsLocked(door)) {
         gAgentLastCommandDebug = "open_door: door is locked";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     if (objectIsOpen(door)) {
         gAgentLastCommandDebug = "open_door: already open";
-        return;
+        return AgentCommandStatus::NoOp;
     }
 
     // Directly set door open state (bypasses animation system for combat compatibility)
@@ -951,25 +972,26 @@ static void handleOpenDoor(const json& cmd)
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
     agentForceObjectRefresh();
+    return AgentCommandStatus::Ok;
 }
 
-static void handlePickUp(const json& cmd)
+static AgentCommandStatus handlePickUp(const json& cmd)
 {
     if (!cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
         debugPrint("AgentBridge: pick_up missing 'object_id'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (animationIsBusy(gDude)) {
         debugPrint("AgentBridge: pick_up skipped — animation busy\n");
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     uintptr_t objId = cmd["object_id"].get<uintptr_t>();
     Object* target = findObjectByUniqueId(objId);
     if (target == nullptr) {
-        debugPrint("AgentBridge: pick_up object %d not found\n", objId);
-        return;
+        debugPrint("AgentBridge: pick_up object %llu not found\n", (unsigned long long)objId);
+        return AgentCommandStatus::Failed;
     }
 
     actionPickUp(gDude, target);
@@ -977,19 +999,20 @@ static void handlePickUp(const json& cmd)
     snprintf(buf, sizeof(buf), "pick_up: id=%llu name=%s", (unsigned long long)objId, safeName(target));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: pick_up on %llu\n", (unsigned long long)objId);
+    return AgentCommandStatus::Ok;
 }
 
-static void handleUseSkill(const json& cmd)
+static AgentCommandStatus handleUseSkill(const json& cmd)
 {
     if (!cmd.contains("skill") || !cmd["skill"].is_string()) {
         debugPrint("AgentBridge: use_skill missing 'skill'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (animationIsBusy(gDude)) {
         gAgentLastCommandDebug = "use_skill: animation busy";
         debugPrint("AgentBridge: use_skill skipped — animation busy\n");
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     std::string skillName = cmd["skill"].get<std::string>();
@@ -997,7 +1020,7 @@ static void handleUseSkill(const json& cmd)
     if (it == gSkillNameToId.end()) {
         gAgentLastCommandDebug = "use_skill: unknown skill " + skillName;
         debugPrint("AgentBridge: use_skill unknown skill '%s'\n", skillName.c_str());
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     // Target: object_id if provided, otherwise self (gDude)
@@ -1009,7 +1032,7 @@ static void handleUseSkill(const json& cmd)
         if (target == nullptr) {
             gAgentLastCommandDebug = "use_skill: object not found";
             debugPrint("AgentBridge: use_skill object %llu not found\n", (unsigned long long)objId);
-            return;
+            return AgentCommandStatus::Failed;
         }
         char* name = objectGetName(target);
         targetDesc = name ? name : "unknown";
@@ -1022,25 +1045,26 @@ static void handleUseSkill(const json& cmd)
     actionUseSkill(gDude, target, it->second);
     gAgentLastCommandDebug = "use_skill: " + skillName + " on " + targetDesc;
     debugPrint("AgentBridge: use_skill '%s' on %s\n", skillName.c_str(), targetDesc.c_str());
+    return AgentCommandStatus::Ok;
 }
 
-static void handleTalkTo(const json& cmd)
+static AgentCommandStatus handleTalkTo(const json& cmd)
 {
     if (!cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
         debugPrint("AgentBridge: talk_to missing 'object_id'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (animationIsBusy(gDude)) {
         debugPrint("AgentBridge: talk_to skipped — animation busy\n");
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     uintptr_t objId = cmd["object_id"].get<uintptr_t>();
     Object* target = findObjectByUniqueId(objId);
     if (target == nullptr) {
-        debugPrint("AgentBridge: talk_to object %d not found\n", objId);
-        return;
+        debugPrint("AgentBridge: talk_to object %llu not found\n", (unsigned long long)objId);
+        return AgentCommandStatus::Failed;
     }
 
     // Check if the NPC is nearby but blocked by a counter/wall
@@ -1061,33 +1085,34 @@ static void handleTalkTo(const json& cmd)
         gAgentLastCommandDebug = buf;
     }
     debugPrint("AgentBridge: talk_to %llu\n", (unsigned long long)objId);
+    return AgentCommandStatus::Ok;
 }
 
-static void handleUseItemOn(const json& cmd)
+static AgentCommandStatus handleUseItemOn(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()
         || !cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
         debugPrint("AgentBridge: use_item_on missing 'item_pid' or 'object_id'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (animationIsBusy(gDude)) {
         gAgentLastCommandDebug = "use_item_on: animation busy";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
     Object* item = objectGetCarriedObjectByPid(gDude, itemPid);
     if (item == nullptr) {
         gAgentLastCommandDebug = "use_item_on: pid " + std::to_string(itemPid) + " not in inventory";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     uintptr_t objId = cmd["object_id"].get<uintptr_t>();
     Object* target = findObjectByUniqueId(objId);
     if (target == nullptr) {
         gAgentLastCommandDebug = "use_item_on: target " + std::to_string(objId) + " not found";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int dist = objectGetDistanceBetween(gDude, target);
@@ -1110,20 +1135,21 @@ static void handleUseItemOn(const json& cmd)
         gAgentLastCommandDebug = buf;
         debugPrint("AgentBridge: %s\n", buf);
     }
+    return AgentCommandStatus::Ok;
 }
 
-static void handleLookAt(const json& cmd)
+static AgentCommandStatus handleLookAt(const json& cmd)
 {
     if (!cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
         debugPrint("AgentBridge: look_at missing 'object_id'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     uintptr_t objId = cmd["object_id"].get<uintptr_t>();
     Object* target = findObjectByUniqueId(objId);
     if (target == nullptr) {
-        debugPrint("AgentBridge: look_at object %d not found\n", objId);
-        return;
+        debugPrint("AgentBridge: look_at object %llu not found\n", (unsigned long long)objId);
+        return AgentCommandStatus::Failed;
     }
 
     char* name = objectGetName(target);
@@ -1152,22 +1178,23 @@ static void handleLookAt(const json& cmd)
     gAgentLastCommandDebug = buf2;
     debugPrint("AgentBridge: look_at %llu — captured: %s\n", (unsigned long long)objId,
         gLookAtCaptureBuffer.empty() ? "(none)" : gLookAtCaptureBuffer.c_str());
+    return AgentCommandStatus::Ok;
 }
 
 // --- Inventory commands ---
 
-static void handleEquipItem(const json& cmd)
+static AgentCommandStatus handleEquipItem(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         debugPrint("AgentBridge: equip_item missing 'item_pid'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
     Object* item = objectGetCarriedObjectByPid(gDude, itemPid);
     if (item == nullptr) {
         debugPrint("AgentBridge: equip_item pid %d not found in inventory\n", itemPid);
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int hand = HAND_RIGHT;
@@ -1201,9 +1228,10 @@ static void handleEquipItem(const json& cmd)
         + " hand=" + (hand == HAND_LEFT ? "left" : "right")
         + " rc=" + std::to_string(rc);
     debugPrint("AgentBridge: equip_item pid %d in %s hand rc=%d\n", itemPid, hand == HAND_LEFT ? "left" : "right", rc);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
-static void handleUnequipItem(const json& cmd)
+static AgentCommandStatus handleUnequipItem(const json& cmd)
 {
     int hand = HAND_RIGHT;
     if (cmd.contains("hand") && cmd["hand"].is_string()) {
@@ -1215,14 +1243,15 @@ static void handleUnequipItem(const json& cmd)
     _inven_unwield(gDude, hand);
     gAgentLastCommandDebug = std::string("unequip_item: ") + (hand == HAND_LEFT ? "left" : "right") + " hand";
     debugPrint("AgentBridge: unequip_item %s hand\n", hand == HAND_LEFT ? "left" : "right");
+    return AgentCommandStatus::Ok;
 }
 
-static void handleUseItem(const json& cmd)
+static AgentCommandStatus handleUseItem(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "use_item: missing 'item_pid'";
         debugPrint("AgentBridge: use_item missing 'item_pid'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -1230,7 +1259,7 @@ static void handleUseItem(const json& cmd)
     if (item == nullptr) {
         gAgentLastCommandDebug = "use_item: pid " + std::to_string(itemPid) + " not found";
         debugPrint("AgentBridge: use_item pid %d not found in inventory\n", itemPid);
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int type = itemGetType(item);
@@ -1251,21 +1280,24 @@ static void handleUseItem(const json& cmd)
         if (rc == 0 || rc == 2) {
             gAgentLastCommandDebug = "use_item: used pid=" + std::to_string(itemPid) + " rc=" + std::to_string(rc);
             debugPrint("AgentBridge: use_item (generic) pid %d rc=%d\n", itemPid, rc);
+            return AgentCommandStatus::Ok;
         } else {
             gAgentLastCommandDebug = "use_item: unsupported type " + std::to_string(type);
             debugPrint("AgentBridge: use_item pid %d — unsupported item type %d\n", itemPid, type);
+            return AgentCommandStatus::Failed;
         }
     }
+    return AgentCommandStatus::Ok;
 }
 
 // --- Use equipped item (player-like: equip to hand → use from game screen) ---
 
-static void handleUseEquippedItem(const json& cmd)
+static AgentCommandStatus handleUseEquippedItem(const json& cmd)
 {
     Object* item = nullptr;
     if (interfaceGetActiveItem(&item) == -1 || item == nullptr) {
         gAgentLastCommandDebug = "use_equipped_item: no item in active hand";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     // For explosives, pre-set the timer so _inven_set_timer returns immediately
@@ -1292,11 +1324,12 @@ static void handleUseEquippedItem(const json& cmd)
     snprintf(buf, sizeof(buf), "use_equipped_item: pid=%d rc=%d", itemPid, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return (rc == 0 || rc == 2) ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
 // --- Reload weapon ---
 
-static void handleReloadWeapon(const json& cmd)
+static AgentCommandStatus handleReloadWeapon(const json& cmd)
 {
     // Determine which hand to reload (default: current active hand)
     int hand = interfaceGetCurrentHand();
@@ -1311,24 +1344,24 @@ static void handleReloadWeapon(const json& cmd)
     Object* weapon = (hand == HAND_RIGHT) ? critterGetItem2(gDude) : critterGetItem1(gDude);
     if (weapon == nullptr) {
         gAgentLastCommandDebug = "reload_weapon: no weapon in hand";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     if (itemGetType(weapon) != ITEM_TYPE_WEAPON) {
         gAgentLastCommandDebug = "reload_weapon: held item is not a weapon";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int capacity = ammoGetCapacity(weapon);
     if (capacity <= 0) {
         gAgentLastCommandDebug = "reload_weapon: weapon doesn't use ammo";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int currentAmmo = ammoGetQuantity(weapon);
     if (currentAmmo >= capacity) {
         gAgentLastCommandDebug = "reload_weapon: already full (" + std::to_string(currentAmmo) + "/" + std::to_string(capacity) + ")";
-        return;
+        return AgentCommandStatus::NoOp;
     }
 
     // If a specific ammo PID is provided, use it; otherwise find compatible ammo
@@ -1338,11 +1371,11 @@ static void handleReloadWeapon(const json& cmd)
         ammo = objectGetCarriedObjectByPid(gDude, ammoPid);
         if (ammo == nullptr) {
             gAgentLastCommandDebug = "reload_weapon: ammo pid " + std::to_string(ammoPid) + " not in inventory";
-            return;
+            return AgentCommandStatus::Failed;
         }
         if (!weaponCanBeReloadedWith(weapon, ammo)) {
             gAgentLastCommandDebug = "reload_weapon: incompatible ammo pid " + std::to_string(ammoPid);
-            return;
+            return AgentCommandStatus::BadArgs;
         }
     } else {
         // Search inventory for compatible ammo
@@ -1357,7 +1390,7 @@ static void handleReloadWeapon(const json& cmd)
         }
         if (ammo == nullptr) {
             gAgentLastCommandDebug = "reload_weapon: no compatible ammo in inventory";
-            return;
+            return AgentCommandStatus::Failed;
         }
     }
 
@@ -1376,15 +1409,16 @@ static void handleReloadWeapon(const json& cmd)
         ammoGetQuantity(weapon), capacity, result);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
 }
 
 // --- Drop item ---
 
-static void handleDropItem(const json& cmd)
+static AgentCommandStatus handleDropItem(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "drop_item: missing 'item_pid'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -1392,46 +1426,66 @@ static void handleDropItem(const json& cmd)
     if (cmd.contains("quantity") && cmd["quantity"].is_number_integer()) {
         quantity = cmd["quantity"].get<int>();
     }
+    if (quantity < 1) {
+        gAgentLastCommandDebug = "drop_item: quantity must be >= 1";
+        return AgentCommandStatus::BadArgs;
+    }
 
-    Object* item = objectGetCarriedObjectByPid(gDude, itemPid);
-    if (item == nullptr) {
+    if (objectGetCarriedObjectByPid(gDude, itemPid) == nullptr) {
         gAgentLastCommandDebug = "drop_item: pid " + std::to_string(itemPid) + " not in inventory";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
-    // Remove item from inventory (does NOT destroy the object)
-    int rc = itemRemove(gDude, item, quantity);
-    if (rc != 0) {
-        gAgentLastCommandDebug = "drop_item: itemRemove failed rc=" + std::to_string(rc);
-        return;
+    int dropped = 0;
+    for (int i = 0; i < quantity; i++) {
+        // Re-fetch each iteration: splitting stacks can replace the inventory object pointer.
+        Object* item = objectGetCarriedObjectByPid(gDude, itemPid);
+        if (item == nullptr)
+            break;
+
+        int rc = itemRemove(gDude, item, 1);
+        if (rc != 0) {
+            if (dropped == 0) {
+                gAgentLastCommandDebug = "drop_item: itemRemove failed rc=" + std::to_string(rc);
+                return AgentCommandStatus::Failed;
+            }
+            break;
+        }
+
+        rc = _obj_connect(item, gDude->tile, gDude->elevation, nullptr);
+        if (rc != 0) {
+            // Failed to place this item — return it to inventory and stop.
+            itemAdd(gDude, item, 1);
+            if (dropped == 0) {
+                gAgentLastCommandDebug = "drop_item: _obj_connect failed, item returned to inventory";
+                return AgentCommandStatus::Failed;
+            }
+            break;
+        }
+
+        dropped++;
     }
 
-    // Place the removed item object on the ground at player's tile
-    rc = _obj_connect(item, gDude->tile, gDude->elevation, nullptr);
-    if (rc != 0) {
-        // Failed to place — try to put it back in inventory
-        itemAdd(gDude, item, quantity);
-        gAgentLastCommandDebug = "drop_item: _obj_connect failed, item returned to inventory";
-        return;
-    }
+    interfaceUpdateItems(false, INTERFACE_ITEM_ACTION_DEFAULT, INTERFACE_ITEM_ACTION_DEFAULT);
 
     char buf[128];
-    snprintf(buf, sizeof(buf), "drop_item: pid=%d qty=%d tile=%d",
-        itemPid, quantity, gDude->tile);
+    snprintf(buf, sizeof(buf), "drop_item: pid=%d qty=%d/%d tile=%d",
+        itemPid, dropped, quantity, gDude->tile);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return dropped > 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
-static void handleGiveItem(const json& cmd)
+static AgentCommandStatus handleGiveItem(const json& cmd)
 {
     if (!gAgentTestMode) {
         gAgentLastCommandDebug = "give_item: BLOCKED — test mode disabled";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "give_item: missing 'item_pid'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -1447,7 +1501,7 @@ static void handleGiveItem(const json& cmd)
             char buf[128];
             snprintf(buf, sizeof(buf), "give_item: failed to create pid=%d (iteration %d)", itemPid, i);
             gAgentLastCommandDebug = buf;
-            return;
+            return AgentCommandStatus::Failed;
         }
 
         rc = itemAdd(gDude, item, 1);
@@ -1456,7 +1510,7 @@ static void handleGiveItem(const json& cmd)
             char buf[128];
             snprintf(buf, sizeof(buf), "give_item: failed to add pid=%d to inventory (rc=%d)", itemPid, rc);
             gAgentLastCommandDebug = buf;
-            return;
+            return AgentCommandStatus::Failed;
         }
     }
 
@@ -1464,6 +1518,7 @@ static void handleGiveItem(const json& cmd)
     snprintf(buf, sizeof(buf), "give_item: pid=%d qty=%d", itemPid, quantity);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
 }
 
 // --- Combat commands ---
@@ -1502,25 +1557,25 @@ static int hitLocationFromString(const std::string& loc)
     return HIT_LOCATION_UNCALLED;
 }
 
-static void handleAttack(const json& cmd)
+static AgentCommandStatus handleAttack(const json& cmd)
 {
     if (!cmd.contains("target_id") || !cmd["target_id"].is_number_integer()) {
         gAgentLastCommandDebug = "attack: missing target_id";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (!isInCombat()) {
         // Auto-enter combat if not already in combat
         enqueueInputEvent('a');
         gAgentLastCommandDebug = "attack: entering combat first (send attack again next tick)";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     uintptr_t targetId = cmd["target_id"].get<uintptr_t>();
     Object* target = findObjectByUniqueId(targetId);
     if (target == nullptr) {
         gAgentLastCommandDebug = "attack: target " + std::to_string(targetId) + " not found";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     // Use the interface's current hit mode by default (respects switch_hand/cycle_attack_mode)
@@ -1581,7 +1636,7 @@ static void handleAttack(const json& cmd)
             reason, ap, apCost, dist, range);
         gAgentLastCommandDebug = buf;
         debugPrint("AgentBridge: %s\n", buf);
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     // If animation busy, queue ALL attacks (including first)
@@ -1592,7 +1647,7 @@ static void handleAttack(const json& cmd)
         char buf[128];
         snprintf(buf, sizeof(buf), "attack: queued %d attacks (animation busy)", count);
         gAgentLastCommandDebug = buf;
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     // Execute first attack immediately
@@ -1607,27 +1662,28 @@ static void handleAttack(const json& cmd)
 
     char buf[256];
     snprintf(buf, sizeof(buf),
-        "attack: target=%lu hitMode=%d hitLoc=%d ap=%d dist=%d rc=%d queued=%d",
-        (unsigned long)targetId, hitMode, hitLocation, ap, dist, rc, count - 1);
+        "attack: target=%llu hitMode=%d hitLoc=%d ap=%d dist=%d rc=%d queued=%d",
+        (unsigned long long)targetId, hitMode, hitLocation, ap, dist, rc, count - 1);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
-static void handleCombatMove(const json& cmd)
+static AgentCommandStatus handleCombatMove(const json& cmd)
 {
     if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
         gAgentLastCommandDebug = "combat_move: missing 'tile'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (!isInCombat()) {
         gAgentLastCommandDebug = "combat_move: not in combat";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     if (animationIsBusy(gDude)) {
         gAgentLastCommandDebug = "combat_move: animation busy";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int tile = cmd["tile"].get<int>();
@@ -1635,18 +1691,18 @@ static void handleCombatMove(const json& cmd)
 
     if (ap <= 0) {
         gAgentLastCommandDebug = "combat_move: REJECTED — no AP remaining";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     if (reg_anim_begin(ANIMATION_REQUEST_RESERVED) != 0) {
         gAgentLastCommandDebug = "combat_move: reg_anim_begin failed";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     if (animationRegisterMoveToTile(gDude, tile, gDude->elevation, ap, 0) != 0) {
         gAgentLastCommandDebug = "combat_move: no path or register failed";
         reg_anim_end();
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     reg_anim_end();
@@ -1658,34 +1714,36 @@ static void handleCombatMove(const json& cmd)
     snprintf(buf, sizeof(buf), "combat_move: tile=%d from=%d ap=%d", tile, gDude->tile, ap);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: combat_move to tile %d\n", tile);
+    return AgentCommandStatus::Ok;
 }
 
-static void handleEndTurn()
+static AgentCommandStatus handleEndTurn()
 {
     if (!isInCombat()) {
         gAgentLastCommandDebug = "end_turn: not in combat";
         debugPrint("AgentBridge: end_turn — not in combat\n");
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     // Space key ends the player's turn in the combat input loop
     enqueueInputEvent(32); // ASCII space = 32
     gAgentLastCommandDebug = "end_turn: ap=" + std::to_string(gDude->data.critter.combat.ap);
     debugPrint("AgentBridge: end_turn\n");
+    return AgentCommandStatus::Ok;
 }
 
-static void handleUseCombatItem(const json& cmd)
+static AgentCommandStatus handleUseCombatItem(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "use_combat_item: missing 'item_pid'";
         debugPrint("AgentBridge: use_combat_item missing 'item_pid'\n");
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (!isInCombat()) {
         gAgentLastCommandDebug = "use_combat_item: not in combat";
         debugPrint("AgentBridge: use_combat_item — not in combat\n");
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -1693,7 +1751,7 @@ static void handleUseCombatItem(const json& cmd)
     if (item == nullptr) {
         gAgentLastCommandDebug = "use_combat_item: pid " + std::to_string(itemPid) + " not found";
         debugPrint("AgentBridge: use_combat_item pid %d not found\n", itemPid);
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int type = itemGetType(item);
@@ -1709,20 +1767,22 @@ static void handleUseCombatItem(const json& cmd)
         }
         gAgentLastCommandDebug = "use_combat_item: drug pid=" + std::to_string(itemPid);
         debugPrint("AgentBridge: use_combat_item (drug) pid %d\n", itemPid);
+        return AgentCommandStatus::Ok;
     } else {
         gAgentLastCommandDebug = "use_combat_item: unsupported type " + std::to_string(type);
         debugPrint("AgentBridge: use_combat_item pid %d — unsupported type %d\n", itemPid, type);
+        return AgentCommandStatus::Failed;
     }
 }
 
 // --- Pathfinding / navigation queries ---
 
-static void handleFindPath(const json& cmd)
+static AgentCommandStatus handleFindPath(const json& cmd)
 {
     if (!cmd.contains("to") || !cmd["to"].is_number_integer()) {
         gAgentLastCommandDebug = "find_path: missing 'to' tile";
         gAgentQueryResult = json::object({ { "type", "find_path" }, { "error", "missing 'to' tile" } });
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int from = gDude->tile;
@@ -1746,7 +1806,7 @@ static void handleFindPath(const json& cmd)
         query["path_length"] = 0;
         query["waypoints"] = json::array();
         gAgentQueryResult = query;
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     // Convert rotations to tile waypoints spaced ~15 tiles apart.
@@ -1778,14 +1838,15 @@ static void handleFindPath(const json& cmd)
     snprintf(buf, sizeof(buf), "find_path: %d -> %d len=%d waypoints=", from, to, pathLen);
     gAgentLastCommandDebug = std::string(buf) + waypoints;
     debugPrint("AgentBridge: find_path from=%d to=%d len=%d\n", from, to, pathLen);
+    return AgentCommandStatus::Ok;
 }
 
-static void handleTileObjects(const json& cmd)
+static AgentCommandStatus handleTileObjects(const json& cmd)
 {
     if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
         gAgentLastCommandDebug = "tile_objects: missing 'tile'";
         gAgentQueryResult = json::object({ { "type", "tile_objects" }, { "error", "missing 'tile'" } });
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int targetTile = cmd["tile"].get<int>();
@@ -1826,7 +1887,7 @@ static void handleTileObjects(const json& cmd)
             entry["pid"] = obj->pid;
             entry["tile"] = obj->tile;
             entry["distance"] = dist;
-            entry["name"] = safeJsonString(name);
+            entry["name"] = safeString(name);
             objects.push_back(entry);
         }
         if (list != nullptr) {
@@ -1839,16 +1900,17 @@ static void handleTileObjects(const json& cmd)
 
     gAgentLastCommandDebug = result;
     debugPrint("AgentBridge: %s\n", result.c_str());
+    return AgentCommandStatus::Ok;
 }
 
 // --- Find item by PID on current elevation ---
 
-static void handleFindItem(const json& cmd)
+static AgentCommandStatus handleFindItem(const json& cmd)
 {
     if (!cmd.contains("pid") || !cmd["pid"].is_number_integer()) {
         gAgentLastCommandDebug = "find_item: missing 'pid'";
         gAgentQueryResult = json::object({ { "type", "find_item" }, { "error", "missing 'pid'" } });
-        return;
+        return AgentCommandStatus::BadArgs;
     }
     int targetPid = cmd["pid"].get<int>();
     std::string result = "find_item pid=" + std::to_string(targetPid) + ": ";
@@ -1877,7 +1939,7 @@ static void handleFindItem(const json& cmd)
                 match["location"] = "ground";
                 match["tile"] = obj->tile;
                 match["distance"] = dist;
-                match["name"] = safeJsonString(name);
+                match["name"] = safeString(name);
                 match["object_id"] = objectToUniqueId(obj);
                 match["quantity"] = 1;
                 matches.push_back(match);
@@ -1897,7 +1959,7 @@ static void handleFindItem(const json& cmd)
                     json match;
                     match["location"] = "ground_container";
                     match["container_id"] = objectToUniqueId(obj);
-                    match["container_name"] = safeJsonString(cname);
+                    match["container_name"] = safeString(cname);
                     match["tile"] = obj->tile;
                     match["distance"] = dist;
                     match["quantity"] = inv->items[j].quantity;
@@ -1929,7 +1991,7 @@ static void handleFindItem(const json& cmd)
                     json match;
                     match["location"] = "container";
                     match["container_id"] = objectToUniqueId(obj);
-                    match["container_name"] = safeJsonString(name);
+                    match["container_name"] = safeString(name);
                     match["tile"] = obj->tile;
                     match["distance"] = dist;
                     match["quantity"] = inv->items[j].quantity;
@@ -1968,11 +2030,12 @@ static void handleFindItem(const json& cmd)
 
     gAgentLastCommandDebug = result;
     debugPrint("AgentBridge: %s\n", result.c_str());
+    return AgentCommandStatus::Ok;
 }
 
 // --- Enumerate all items/containers on current elevation ---
 
-static void handleListAllItems(const json& cmd)
+static AgentCommandStatus handleListAllItems(const json& cmd)
 {
     std::string result = "list_all_items elev=" + std::to_string(gDude->elevation) + ": ";
     int totalItems = 0;
@@ -2001,7 +2064,7 @@ static void handleListAllItems(const json& cmd)
                 entry["pid"] = obj->pid;
                 entry["tile"] = obj->tile;
                 entry["distance"] = dist;
-                entry["name"] = safeJsonString(name);
+                entry["name"] = safeString(name);
                 entry["item_count"] = obj->data.inventory.length;
                 json sample = json::array();
                 Inventory* inv = &obj->data.inventory;
@@ -2013,7 +2076,7 @@ static void handleListAllItems(const json& cmd)
                         result += ibuf;
                         json s;
                         s["pid"] = inv->items[j].item->pid;
-                        s["name"] = safeJsonString(iname);
+                        s["name"] = safeString(iname);
                         s["quantity"] = inv->items[j].quantity;
                         sample.push_back(s);
                     }
@@ -2030,7 +2093,7 @@ static void handleListAllItems(const json& cmd)
                 entry["pid"] = obj->pid;
                 entry["tile"] = obj->tile;
                 entry["distance"] = dist;
-                entry["name"] = safeJsonString(name);
+                entry["name"] = safeString(name);
                 entries.push_back(entry);
             }
             totalItems++;
@@ -2059,7 +2122,7 @@ static void handleListAllItems(const json& cmd)
             entry["pid"] = obj->pid;
             entry["tile"] = obj->tile;
             entry["distance"] = dist;
-            entry["name"] = safeJsonString(cname);
+            entry["name"] = safeString(cname);
             entry["item_count"] = inv->length;
             json sample = json::array();
             for (int j = 0; j < inv->length && j < 5; j++) {
@@ -2070,7 +2133,7 @@ static void handleListAllItems(const json& cmd)
                     result += ibuf;
                     json s;
                     s["pid"] = inv->items[j].item->pid;
-                    s["name"] = safeJsonString(iname);
+                    s["name"] = safeString(iname);
                     s["quantity"] = inv->items[j].quantity;
                     sample.push_back(s);
                 }
@@ -2094,17 +2157,18 @@ static void handleListAllItems(const json& cmd)
 
     gAgentLastCommandDebug = result;
     debugPrint("AgentBridge: %s\n", result.c_str());
+    return AgentCommandStatus::Ok;
 }
 
 // --- Map transition command ---
 
-static void handleMapTransition(const json& cmd)
+static AgentCommandStatus handleMapTransition(const json& cmd)
 {
     if (!cmd.contains("map") || !cmd["map"].is_number_integer()
         || !cmd.contains("elevation") || !cmd["elevation"].is_number_integer()
         || !cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
         gAgentLastCommandDebug = "map_transition: missing map/elevation/tile";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int map = cmd["map"].get<int>();
@@ -2114,7 +2178,7 @@ static void handleMapTransition(const json& cmd)
     // ALL map transitions require test mode — players navigate via exit grids
     if (!gAgentTestMode) {
         gAgentLastCommandDebug = "map_transition: BLOCKED — test mode disabled (use exit grids instead)";
-        return;
+        return AgentCommandStatus::Blocked;
     }
     int rotation = 0;
     if (cmd.contains("rotation") && cmd["rotation"].is_number_integer()) {
@@ -2141,20 +2205,21 @@ static void handleMapTransition(const json& cmd)
 
     snprintf(buf, sizeof(buf), "map_transition: done map=%d elev=%d tile=%d", map, elevation, tile);
     gAgentLastCommandDebug = buf;
+    return AgentCommandStatus::Ok;
 }
 
 // --- Teleport command (direct position set) ---
 
-static void handleTeleport(const json& cmd)
+static AgentCommandStatus handleTeleport(const json& cmd)
 {
     if (!gAgentTestMode) {
         gAgentLastCommandDebug = "teleport: BLOCKED — test mode disabled (use set_test_mode to enable)";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
         gAgentLastCommandDebug = "teleport: missing 'tile'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int tile = cmd["tile"].get<int>();
@@ -2182,27 +2247,28 @@ static void handleTeleport(const json& cmd)
         oldTile, oldElev, tile, elevation, gDude->tile);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
 }
 
 // --- Container interaction ---
 
-static void handleOpenContainer(const json& cmd)
+static AgentCommandStatus handleOpenContainer(const json& cmd)
 {
     if (!cmd.contains("object_id") || !cmd["object_id"].is_number_integer()) {
         gAgentLastCommandDebug = "open_container: missing 'object_id'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (animationIsBusy(gDude)) {
         gAgentLastCommandDebug = "open_container: animation busy";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     uintptr_t objId = cmd["object_id"].get<uintptr_t>();
     Object* target = findObjectByUniqueId(objId);
     if (target == nullptr) {
         gAgentLastCommandDebug = "open_container: object " + std::to_string(objId) + " not found";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     // Always use actionPickUp — the engine's proper walk-to-and-interact.
@@ -2212,24 +2278,25 @@ static void handleOpenContainer(const json& cmd)
 
     int distance = objectGetDistanceBetween(gDude, target);
     char buf[128];
-    snprintf(buf, sizeof(buf), "open_container: id=%lu dist=%d", (unsigned long)objId, distance);
+    snprintf(buf, sizeof(buf), "open_container: id=%llu dist=%d", (unsigned long long)objId, distance);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
 }
 
 // --- Loot/container commands ---
 
-static void handleLootTake(const json& cmd)
+static AgentCommandStatus handleLootTake(const json& cmd)
 {
     Object* target = inven_get_current_target_obj();
     if (target == nullptr) {
         gAgentLastCommandDebug = "loot_take: no loot target";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "loot_take: missing 'item_pid'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -2242,7 +2309,7 @@ static void handleLootTake(const json& cmd)
     Object* item = objectGetCarriedObjectByPid(target, itemPid);
     if (item == nullptr) {
         gAgentLastCommandDebug = "loot_take: item pid " + std::to_string(itemPid) + " not in container";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int rc = itemMove(target, gDude, item, quantity);
@@ -2252,14 +2319,15 @@ static void handleLootTake(const json& cmd)
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
     agentForceObjectRefresh();
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
-static void handleLootTakeAll()
+static AgentCommandStatus handleLootTakeAll()
 {
     Object* target = inven_get_current_target_obj();
     if (target == nullptr) {
         gAgentLastCommandDebug = "loot_take_all: no loot target";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int taken = 0;
@@ -2289,22 +2357,24 @@ static void handleLootTakeAll()
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
     agentForceObjectRefresh();
+    return AgentCommandStatus::Ok;
 }
 
-static void handleLootClose()
+static AgentCommandStatus handleLootClose()
 {
     // Send Escape to close the loot screen
     enqueueInputEvent(KEY_ESCAPE);
     debugPrint("AgentBridge: loot_close (injected Escape)\n");
+    return AgentCommandStatus::Ok;
 }
 
 // --- World map commands ---
 
-static void handleWorldmapTravel(const json& cmd)
+static AgentCommandStatus handleWorldmapTravel(const json& cmd)
 {
     if (!cmd.contains("area_id") || !cmd["area_id"].is_number_integer()) {
         gAgentLastCommandDebug = "worldmap_travel: missing 'area_id'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int areaId = cmd["area_id"].get<int>();
@@ -2323,13 +2393,14 @@ static void handleWorldmapTravel(const json& cmd)
     snprintf(buf, sizeof(buf), "worldmap_travel: walking to area %d rc=%d", areaId, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
-static void handleWorldmapEnterLocation(const json& cmd)
+static AgentCommandStatus handleWorldmapEnterLocation(const json& cmd)
 {
     if (!cmd.contains("area_id") || !cmd["area_id"].is_number_integer()) {
         gAgentLastCommandDebug = "worldmap_enter_location: missing 'area_id'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int areaId = cmd["area_id"].get<int>();
@@ -2354,7 +2425,7 @@ static void handleWorldmapEnterLocation(const json& cmd)
         snprintf(buf, sizeof(buf), "worldmap_enter_location: invalid entrance %d for area %d",
             entranceIdx, areaId);
         gAgentLastCommandDebug = buf;
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     // Auto-discover the entrance if unknown
@@ -2375,22 +2446,23 @@ static void handleWorldmapEnterLocation(const json& cmd)
         areaId, entranceIdx, entMapIdx);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
 }
 
 // --- Level-up commands (player-like: work through character editor UI) ---
 
-static void handleSkillAdd(const json& cmd)
+static AgentCommandStatus handleSkillAdd(const json& cmd)
 {
     if (!cmd.contains("skill") || !cmd["skill"].is_string()) {
         gAgentLastCommandDebug = "skill_add: missing 'skill'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     std::string skillName = cmd["skill"].get<std::string>();
     auto it = gSkillNameToId.find(skillName);
     if (it == gSkillNameToId.end()) {
         gAgentLastCommandDebug = "skill_add: unknown skill '" + skillName + "'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int skillId = it->second;
@@ -2406,20 +2478,21 @@ static void handleSkillAdd(const json& cmd)
         skillName.c_str(), skillId, pcGetStat(PC_STAT_UNSPENT_SKILL_POINTS));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
 }
 
-static void handleSkillSub(const json& cmd)
+static AgentCommandStatus handleSkillSub(const json& cmd)
 {
     if (!cmd.contains("skill") || !cmd["skill"].is_string()) {
         gAgentLastCommandDebug = "skill_sub: missing 'skill'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     std::string skillName = cmd["skill"].get<std::string>();
     auto it = gSkillNameToId.find(skillName);
     if (it == gSkillNameToId.end()) {
         gAgentLastCommandDebug = "skill_sub: unknown skill '" + skillName + "'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int skillId = it->second;
@@ -2433,25 +2506,26 @@ static void handleSkillSub(const json& cmd)
         skillName.c_str(), skillId, pcGetStat(PC_STAT_UNSPENT_SKILL_POINTS));
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
 }
 
-static void handlePerkAdd(const json& cmd)
+static AgentCommandStatus handlePerkAdd(const json& cmd)
 {
     if (!cmd.contains("perk_id") || !cmd["perk_id"].is_number_integer()) {
         gAgentLastCommandDebug = "perk_add: missing 'perk_id'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     int perkId = cmd["perk_id"].get<int>();
     if (perkId < 0 || perkId >= PERK_COUNT) {
         gAgentLastCommandDebug = "perk_add: invalid perk_id " + std::to_string(perkId);
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     // Guard: only act when the perk dialog is open (i.e., editor has a free perk)
     if (!agentEditorHasFreePerk()) {
         gAgentLastCommandDebug = "perk_add: no free perk available (is perk dialog open?)";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     // Position the perk dialog selection and inject KEY_RETURN to confirm.
@@ -2468,21 +2542,22 @@ static void handlePerkAdd(const json& cmd)
     }
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return rc == -1 ? AgentCommandStatus::Failed : AgentCommandStatus::Ok;
 }
 
 // --- Barter commands ---
 
-static void handleBarterOffer(const json& cmd)
+static AgentCommandStatus handleBarterOffer(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "barter_offer: missing 'item_pid'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     Object* playerTable = agentGetBarterPlayerTable();
     if (playerTable == nullptr) {
         gAgentLastCommandDebug = "barter_offer: not in barter (no player table)";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -2494,7 +2569,7 @@ static void handleBarterOffer(const json& cmd)
     Object* item = objectGetCarriedObjectByPid(gDude, itemPid);
     if (item == nullptr) {
         gAgentLastCommandDebug = "barter_offer: item pid " + std::to_string(itemPid) + " not in player inventory";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int rc = itemMove(gDude, playerTable, item, quantity);
@@ -2503,19 +2578,20 @@ static void handleBarterOffer(const json& cmd)
     snprintf(buf, sizeof(buf), "barter_offer: pid=%d qty=%d rc=%d", itemPid, quantity, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
-static void handleBarterRemoveOffer(const json& cmd)
+static AgentCommandStatus handleBarterRemoveOffer(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "barter_remove_offer: missing 'item_pid'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     Object* playerTable = agentGetBarterPlayerTable();
     if (playerTable == nullptr) {
         gAgentLastCommandDebug = "barter_remove_offer: not in barter";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -2527,7 +2603,7 @@ static void handleBarterRemoveOffer(const json& cmd)
     Object* item = objectGetCarriedObjectByPid(playerTable, itemPid);
     if (item == nullptr) {
         gAgentLastCommandDebug = "barter_remove_offer: item pid " + std::to_string(itemPid) + " not in offer table";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int rc = itemMove(playerTable, gDude, item, quantity);
@@ -2536,24 +2612,25 @@ static void handleBarterRemoveOffer(const json& cmd)
     snprintf(buf, sizeof(buf), "barter_remove_offer: pid=%d qty=%d rc=%d", itemPid, quantity, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
-static void handleBarterRequest(const json& cmd)
+static AgentCommandStatus handleBarterRequest(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "barter_request: missing 'item_pid'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (gGameDialogSpeaker == nullptr) {
         gAgentLastCommandDebug = "barter_request: no merchant";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     Object* merchantTable = agentGetBarterMerchantTable();
     if (merchantTable == nullptr) {
         gAgentLastCommandDebug = "barter_request: not in barter (no merchant table)";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -2565,7 +2642,7 @@ static void handleBarterRequest(const json& cmd)
     Object* item = objectGetCarriedObjectByPid(gGameDialogSpeaker, itemPid);
     if (item == nullptr) {
         gAgentLastCommandDebug = "barter_request: item pid " + std::to_string(itemPid) + " not in merchant inventory";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int rc = itemMove(gGameDialogSpeaker, merchantTable, item, quantity);
@@ -2574,24 +2651,25 @@ static void handleBarterRequest(const json& cmd)
     snprintf(buf, sizeof(buf), "barter_request: pid=%d qty=%d rc=%d", itemPid, quantity, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
-static void handleBarterRemoveRequest(const json& cmd)
+static AgentCommandStatus handleBarterRemoveRequest(const json& cmd)
 {
     if (!cmd.contains("item_pid") || !cmd["item_pid"].is_number_integer()) {
         gAgentLastCommandDebug = "barter_remove_request: missing 'item_pid'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (gGameDialogSpeaker == nullptr) {
         gAgentLastCommandDebug = "barter_remove_request: no merchant";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     Object* merchantTable = agentGetBarterMerchantTable();
     if (merchantTable == nullptr) {
         gAgentLastCommandDebug = "barter_remove_request: not in barter";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int itemPid = cmd["item_pid"].get<int>();
@@ -2603,7 +2681,7 @@ static void handleBarterRemoveRequest(const json& cmd)
     Object* item = objectGetCarriedObjectByPid(merchantTable, itemPid);
     if (item == nullptr) {
         gAgentLastCommandDebug = "barter_remove_request: item pid " + std::to_string(itemPid) + " not in offer table";
-        return;
+        return AgentCommandStatus::Failed;
     }
 
     int rc = itemMove(merchantTable, gGameDialogSpeaker, item, quantity);
@@ -2612,20 +2690,21 @@ static void handleBarterRemoveRequest(const json& cmd)
     snprintf(buf, sizeof(buf), "barter_remove_request: pid=%d qty=%d rc=%d", itemPid, quantity, rc);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: %s\n", buf);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
 }
 
 // --- Dialogue commands ---
 
-static void handleSelectDialogue(const json& cmd)
+static AgentCommandStatus handleSelectDialogue(const json& cmd)
 {
     if (!cmd.contains("index") || !cmd["index"].is_number_integer()) {
         gAgentLastCommandDebug = "select_dialogue: missing 'index'";
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     if (!_gdialogActive()) {
         gAgentLastCommandDebug = "select_dialogue: no dialogue active";
-        return;
+        return AgentCommandStatus::Blocked;
     }
 
     int index = cmd["index"].get<int>();
@@ -2635,7 +2714,7 @@ static void handleSelectDialogue(const json& cmd)
         char buf[96];
         snprintf(buf, sizeof(buf), "select_dialogue: index %d out of range (options=%d)", index, optionCount);
         gAgentLastCommandDebug = buf;
-        return;
+        return AgentCommandStatus::BadArgs;
     }
 
     // Visually highlight the selected option, then defer key injection
@@ -2648,6 +2727,797 @@ static void handleSelectDialogue(const json& cmd)
     snprintf(buf, sizeof(buf), "select_dialogue: index=%d highlighted (deferred)", index);
     gAgentLastCommandDebug = buf;
     debugPrint("AgentBridge: select_dialogue index %d highlighted, deferring key\n", index);
+    return AgentCommandStatus::Ok;
+}
+
+using AgentCommandHandler = AgentCommandStatus (*)(const json&);
+
+static AgentCommandStatus handleFinishCharacterCreationCommand(const json&)
+{
+    return handleFinishCharacterCreation();
+}
+
+static AgentCommandStatus handleMoveToWalkCommand(const json& cmd)
+{
+    return handleMoveTo(cmd, false);
+}
+
+static AgentCommandStatus handleMoveToRunCommand(const json& cmd)
+{
+    return handleMoveTo(cmd, true);
+}
+
+static AgentCommandStatus handleEndTurnCommand(const json&)
+{
+    return handleEndTurn();
+}
+
+static AgentCommandStatus handleLootTakeAllCommand(const json&)
+{
+    return handleLootTakeAll();
+}
+
+static AgentCommandStatus handleLootCloseCommand(const json&)
+{
+    return handleLootClose();
+}
+
+static AgentCommandStatus handleSkipCommand(const json&)
+{
+    enqueueInputEvent(KEY_ESCAPE);
+    gAgentLastCommandDebug = "skip";
+    debugPrint("AgentBridge: skip (injected escape event)\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleMouseMoveCommand(const json& cmd)
+{
+    if (!cmd.contains("x") || !cmd.contains("y")
+        || !cmd["x"].is_number_integer() || !cmd["y"].is_number_integer()) {
+        gAgentLastCommandDebug = "mouse_move: missing x/y";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    int x = cmd["x"].get<int>();
+    int y = cmd["y"].get<int>();
+    _mouse_set_position(x, y);
+    gAgentLastCommandDebug = "mouse_move: x=" + std::to_string(x) + " y=" + std::to_string(y);
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleMouseClickCommand(const json& cmd)
+{
+    if (!cmd.contains("x") || !cmd.contains("y")
+        || !cmd["x"].is_number_integer() || !cmd["y"].is_number_integer()) {
+        gAgentLastCommandDebug = "mouse_click: missing x/y";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    int x = cmd["x"].get<int>();
+    int y = cmd["y"].get<int>();
+    _mouse_set_position(x, y);
+
+    int buttons = MOUSE_STATE_LEFT_BUTTON_DOWN;
+    if (cmd.contains("button") && cmd["button"].is_string()) {
+        std::string button = cmd["button"].get<std::string>();
+        if (button == "right") {
+            buttons = MOUSE_STATE_RIGHT_BUTTON_DOWN;
+        }
+    }
+
+    _mouse_simulate_input(0, 0, buttons);
+    _mouse_simulate_input(0, 0, 0);
+    gAgentLastCommandDebug = "mouse_click: x=" + std::to_string(x) + " y=" + std::to_string(y);
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleKeyPressCommand(const json& cmd)
+{
+    if (!cmd.contains("key") || !cmd["key"].is_string()) {
+        gAgentLastCommandDebug = "key_press: missing key";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    std::string keyName = cmd["key"].get<std::string>();
+    auto it = gKeyNameToScancode.find(keyName);
+    if (it == gKeyNameToScancode.end()) {
+        debugPrint("AgentBridge: unknown key '%s'\n", keyName.c_str());
+        gAgentLastCommandDebug = "key_press: unknown key '" + keyName + "'";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    KeyboardData data;
+    data.key = it->second;
+    data.down = 1;
+    _kb_simulate_key(&data);
+    gAgentLastCommandDebug = "key_press: " + keyName;
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleKeyReleaseCommand(const json& cmd)
+{
+    if (!cmd.contains("key") || !cmd["key"].is_string()) {
+        gAgentLastCommandDebug = "key_release: missing key";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    std::string keyName = cmd["key"].get<std::string>();
+    auto it = gKeyNameToScancode.find(keyName);
+    if (it == gKeyNameToScancode.end()) {
+        debugPrint("AgentBridge: unknown key '%s'\n", keyName.c_str());
+        gAgentLastCommandDebug = "key_release: unknown key '" + keyName + "'";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    KeyboardData data;
+    data.key = it->second;
+    data.down = 0;
+    _kb_simulate_key(&data);
+    gAgentLastCommandDebug = "key_release: " + keyName;
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleSwitchHandCommand(const json&)
+{
+    interfaceBarSwapHands(true);
+    gAgentLastCommandDebug = "switch_hand: now hand " + std::to_string(interfaceGetCurrentHand());
+    debugPrint("AgentBridge: switch_hand (now hand %d)\n", interfaceGetCurrentHand());
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleCycleAttackModeCommand(const json&)
+{
+    interfaceCycleItemAction();
+    gAgentLastCommandDebug = "cycle_attack_mode";
+    debugPrint("AgentBridge: cycle_attack_mode\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleForceIdleCommand(const json&)
+{
+    reg_anim_clear(gDude);
+    gAgentLastCommandDebug = "force_idle: animation cleared";
+    debugPrint("AgentBridge: force_idle — animation state reset\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleForceEndCombatCommand(const json&)
+{
+    if (!gAgentTestMode) {
+        gAgentLastCommandDebug = "force_end_combat: BLOCKED — test mode disabled";
+        return AgentCommandStatus::Blocked;
+    }
+    if (!isInCombat()) {
+        gAgentLastCommandDebug = "force_end_combat: not in combat";
+        return AgentCommandStatus::NoOp;
+    }
+
+    _combat_over_from_load();
+    gAgentLastCommandDebug = "force_end_combat: combat ended";
+    debugPrint("AgentBridge: force_end_combat — combat forcefully ended\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleDetonateAtCommand(const json& cmd)
+{
+    if (!gAgentTestMode) {
+        gAgentLastCommandDebug = "detonate_at: BLOCKED — test mode disabled";
+        return AgentCommandStatus::Blocked;
+    }
+    if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
+        gAgentLastCommandDebug = "detonate_at: missing 'tile'";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    int tile = cmd["tile"].get<int>();
+    int elevation = gDude->elevation;
+
+    int pid = 85;
+    if (cmd.contains("pid") && cmd["pid"].is_number_integer()) {
+        pid = cmd["pid"].get<int>();
+    }
+
+    int minDamage = 40;
+    int maxDamage = 80;
+    explosiveGetDamage(pid, &minDamage, &maxDamage);
+    int radius = weaponGetRocketExplosionRadius(nullptr);
+
+    actionExplode(tile, elevation, minDamage, maxDamage, gDude, false);
+    _scr_explode_scenery(gDude, tile, radius, elevation);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "detonate_at: tile=%d dmg=%d-%d radius=%d",
+        tile, minDamage, maxDamage, radius);
+    gAgentLastCommandDebug = buf;
+    debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleNudgeCommand(const json& cmd)
+{
+    if (!gAgentTestMode) {
+        gAgentLastCommandDebug = "nudge: BLOCKED — test mode disabled";
+        return AgentCommandStatus::Blocked;
+    }
+    if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
+        gAgentLastCommandDebug = "nudge: missing 'tile'";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    int tile = cmd["tile"].get<int>();
+    int dist = tileDistanceBetween(gDude->tile, tile);
+    if (dist > 1) {
+        gAgentLastCommandDebug = "nudge: too far (dist=" + std::to_string(dist) + ", max=1)";
+        return AgentCommandStatus::Failed;
+    }
+
+    reg_anim_clear(gDude);
+    Rect rect;
+    int oldTile = gDude->tile;
+    objectSetLocation(gDude, tile, gDude->elevation, &rect);
+    tileSetCenter(tile, TILE_SET_CENTER_REFRESH_WINDOW);
+    if (isInCombat() && gDude->data.critter.combat.ap > 0) {
+        gDude->data.critter.combat.ap -= 1;
+    }
+    gAgentLastCommandDebug = "nudge: " + std::to_string(oldTile) + " -> " + std::to_string(tile);
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleCenterCameraCommand(const json&)
+{
+    tileSetCenter(gDude->tile, TILE_SET_CENTER_REFRESH_WINDOW);
+    gAgentLastCommandDebug = "center_camera: tile=" + std::to_string(gDude->tile);
+    debugPrint("AgentBridge: center_camera on tile %d\n", gDude->tile);
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleRestCommand(const json& cmd)
+{
+    if (isInCombat()) {
+        gAgentLastCommandDebug = "rest: cannot rest in combat";
+        return AgentCommandStatus::Blocked;
+    }
+    if (!_critter_can_obj_dude_rest()) {
+        gAgentLastCommandDebug = "rest: cannot rest here (hostile critters or location)";
+        return AgentCommandStatus::Blocked;
+    }
+
+    int hours = 1;
+    if (cmd.contains("hours") && cmd["hours"].is_number_integer()) {
+        hours = cmd["hours"].get<int>();
+        if (hours < 1) hours = 1;
+        if (hours > 24) hours = 24;
+    }
+    bool interrupted = agentRest(hours, 0);
+    int hp = critterGetHitPoints(gDude);
+    int maxHp = critterGetStat(gDude, STAT_MAXIMUM_HIT_POINTS);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "rest: %d hours%s hp=%d/%d",
+        hours, interrupted ? " (interrupted)" : "", hp, maxHp);
+    gAgentLastCommandDebug = buf;
+    debugPrint("AgentBridge: %s\n", buf);
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handlePipBoyCommand(const json&)
+{
+    enqueueInputEvent('p');
+    gAgentLastCommandDebug = "pip_boy";
+    debugPrint("AgentBridge: pip_boy (injected 'p')\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleCharacterScreenCommand(const json&)
+{
+    enqueueInputEvent('c');
+    gAgentLastCommandDebug = "character_screen";
+    debugPrint("AgentBridge: character_screen (injected 'c')\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleInventoryOpenCommand(const json&)
+{
+    enqueueInputEvent('i');
+    gAgentLastCommandDebug = "inventory_open";
+    debugPrint("AgentBridge: inventory_open (injected 'i')\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleSkilldexCommand(const json&)
+{
+    enqueueInputEvent('s');
+    gAgentLastCommandDebug = "skilldex";
+    debugPrint("AgentBridge: skilldex (injected 's')\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleToggleSneakCommand(const json&)
+{
+    dudeToggleState(DUDE_STATE_SNEAKING);
+    bool sneaking = dudeHasState(DUDE_STATE_SNEAKING);
+    gAgentLastCommandDebug = std::string("toggle_sneak: now ") + (sneaking ? "sneaking" : "not sneaking");
+    debugPrint("AgentBridge: toggle_sneak → %s\n", sneaking ? "on" : "off");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleEnterCombatCommand(const json&)
+{
+    if (isInCombat()) {
+        gAgentLastCommandDebug = "enter_combat: already in combat";
+        return AgentCommandStatus::NoOp;
+    }
+    enqueueInputEvent('a');
+    gAgentLastCommandDebug = "enter_combat: initiated";
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleFleeCombatCommand(const json&)
+{
+    if (!isInCombat()) {
+        gAgentLastCommandDebug = "flee_combat: not in combat";
+        return AgentCommandStatus::Blocked;
+    }
+    enqueueInputEvent(KEY_RETURN);
+    gAgentLastCommandDebug = "flee_combat: attempted";
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleBarterConfirmCommand(const json&)
+{
+    Object* ptbl = agentGetBarterPlayerTable();
+    Object* mtbl = agentGetBarterMerchantTable();
+    if (ptbl == nullptr || mtbl == nullptr || gGameDialogSpeaker == nullptr) {
+        gAgentLastCommandDebug = "barter_confirm: not in barter";
+        return AgentCommandStatus::Blocked;
+    }
+
+    int pitems = ptbl->data.inventory.length;
+    int mitems = mtbl->data.inventory.length;
+    if (pitems == 0 && mitems == 0) {
+        gAgentLastCommandDebug = "barter_confirm: nothing on tables";
+        return AgentCommandStatus::NoOp;
+    }
+
+    enqueueInputEvent('m');
+    gAgentLastCommandDebug = "barter_confirm: attempted (injected 'm')";
+    debugPrint("AgentBridge: barter_confirm (injected 'm', pitems=%d mitems=%d)\n", pitems, mitems);
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleBarterTalkCommand(const json&)
+{
+    enqueueInputEvent('t');
+    gAgentLastCommandDebug = "barter_talk";
+    debugPrint("AgentBridge: barter_talk (injected 't')\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleBarterCancelCommand(const json&)
+{
+    enqueueInputEvent(KEY_ESCAPE);
+    gAgentLastCommandDebug = "barter_cancel";
+    debugPrint("AgentBridge: barter_cancel (injected escape)\n");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleQuicksaveCommand(const json& cmd)
+{
+    if (gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
+        gAgentLastCommandDebug = "quicksave: not in gameplay context";
+        debugPrint("AgentBridge: quicksave — not in gameplay context\n");
+        return AgentCommandStatus::Blocked;
+    }
+
+    std::string desc = "Agent Save";
+    if (cmd.contains("description") && cmd["description"].is_string()) {
+        desc = cmd["description"].get<std::string>();
+    }
+    int rc = agentQuickSave(desc.c_str());
+    gAgentLastCommandDebug = "quicksave: rc=" + std::to_string(rc) + " desc=" + desc;
+    debugPrint("AgentBridge: quicksave result=%d\n", rc);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
+}
+
+static AgentCommandStatus handleQuickloadCommand(const json&)
+{
+    if (gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
+        gAgentLastCommandDebug = "quickload: not in gameplay context";
+        debugPrint("AgentBridge: quickload — not in gameplay, ignoring\n");
+        return AgentCommandStatus::Blocked;
+    }
+
+    int rc = agentQuickLoad();
+    gAgentLastCommandDebug = "quickload: rc=" + std::to_string(rc);
+    debugPrint("AgentBridge: quickload result=%d\n", rc);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
+}
+
+static AgentCommandStatus handleSaveSlotCommand(const json& cmd)
+{
+    if (gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
+        gAgentLastCommandDebug = "save_slot: not in gameplay context";
+        return AgentCommandStatus::Blocked;
+    }
+
+    int slot = 0;
+    if (cmd.contains("slot") && cmd["slot"].is_number_integer()) {
+        slot = cmd["slot"].get<int>();
+    }
+    std::string desc = "Agent Save";
+    if (cmd.contains("description") && cmd["description"].is_string()) {
+        desc = cmd["description"].get<std::string>();
+    }
+    int rc = agentSaveToSlot(slot, desc.c_str());
+    gAgentLastCommandDebug = "save_slot: slot=" + std::to_string(slot) + " rc=" + std::to_string(rc) + " desc=" + desc;
+    debugPrint("AgentBridge: save_slot slot=%d result=%d\n", slot, rc);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
+}
+
+static AgentCommandStatus handleLoadSlotCommand(const json& cmd)
+{
+    if (gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
+        gAgentLastCommandDebug = "load_slot: not in gameplay context";
+        return AgentCommandStatus::Blocked;
+    }
+
+    int slot = 0;
+    if (cmd.contains("slot") && cmd["slot"].is_number_integer()) {
+        slot = cmd["slot"].get<int>();
+    }
+    int rc = agentLoadFromSlot(slot);
+    gAgentLastCommandDebug = "load_slot: slot=" + std::to_string(slot) + " rc=" + std::to_string(rc);
+    debugPrint("AgentBridge: load_slot slot=%d result=%d\n", slot, rc);
+    return rc == 0 ? AgentCommandStatus::Ok : AgentCommandStatus::Failed;
+}
+
+static AgentCommandStatus handleInputEventCommand(const json& cmd)
+{
+    if (!cmd.contains("key_code") || !cmd["key_code"].is_number_integer()) {
+        gAgentLastCommandDebug = "input_event: missing key_code";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    int keyCode = cmd["key_code"].get<int>();
+    enqueueInputEvent(keyCode);
+    gAgentLastCommandDebug = "input_event: code=" + std::to_string(keyCode);
+    debugPrint("AgentBridge: input_event code=%d\n", keyCode);
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleFloatThoughtCommand(const json& cmd)
+{
+    if (!cmd.contains("text") || !cmd["text"].is_string()) {
+        gAgentLastCommandDebug = "float_thought: missing text field";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    std::string text = cmd["text"].get<std::string>();
+    if (text.empty() || gDude == nullptr) {
+        gAgentLastCommandDebug = "float_thought: empty text or no player";
+        return AgentCommandStatus::Failed;
+    }
+
+    const char* ctx = detectContext();
+    if (ctx != nullptr && strcmp(ctx, "gameplay_dialogue") == 0) {
+        renderDialogueOverlay(text.c_str());
+        gAgentLastCommandDebug = "float_thought(overlay): " + text.substr(0, 40);
+    } else {
+        agentHideDialogueOverlay();
+        textObjectsRemoveByOwner(gDude);
+        Rect rect;
+        char* buf = strdup(text.c_str());
+        if (textObjectAdd(gDude, buf, 101, _colorTable[28106], _colorTable[0], &rect) == 0) {
+            tileWindowRefreshRect(&rect, gElevation);
+        }
+        free(buf);
+        gAgentLastCommandDebug = "float_thought: " + text.substr(0, 40);
+    }
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleSetStatusCommand(const json& cmd)
+{
+    std::string text = cmd.value("text", "");
+    if (text.empty()) {
+        gAgentLastCommandDebug = "set_status: missing text";
+        return AgentCommandStatus::BadArgs;
+    }
+
+    agentShowStatusOverlay(text.c_str());
+    gAgentLastCommandDebug = "set_status: " + text;
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleClearStatusCommand(const json&)
+{
+    agentHideStatusOverlay();
+    gAgentLastCommandDebug = "clear_status";
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleAutoCombatCommand(const json& cmd)
+{
+    bool enabled = cmd.contains("enabled") && cmd["enabled"].is_boolean()
+        && cmd["enabled"].get<bool>();
+    if (enabled && gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
+        gAgentLastCommandDebug = "auto_combat: not in gameplay";
+        return AgentCommandStatus::Blocked;
+    }
+    if (enabled && !gAgentAutoCombat) {
+        gAgentOriginalAiPacket = gDude->data.critter.combat.aiPacket;
+        int numPackets = combat_ai_num();
+        int dedicatedPacket = numPackets > 1 ? numPackets - 1 : 0;
+        gDude->data.critter.combat.aiPacket = dedicatedPacket;
+
+        aiSetAttackWho(gDude, ATTACK_WHO_STRONGEST);
+        aiSetDistance(gDude, DISTANCE_CHARGE);
+        aiSetBestWeapon(gDude, BEST_WEAPON_NO_PREF);
+        aiSetChemUse(gDude, CHEM_USE_STIMS_WHEN_HURT_LOTS);
+        aiSetRunAwayMode(gDude, RUN_AWAY_MODE_NEVER);
+        aiSetAreaAttackMode(gDude, AREA_ATTACK_MODE_BE_CAREFUL);
+        aiSetDisposition(gDude, DISPOSITION_AGGRESSIVE);
+
+        gAgentAutoCombat = true;
+        gAgentLastCommandDebug = "auto_combat: ON (packet=" + std::to_string(dedicatedPacket) + ")";
+        debugPrint("AgentBridge: auto_combat ON (packet=%d, total=%d)\n", dedicatedPacket, numPackets);
+        return AgentCommandStatus::Ok;
+    }
+    if (!enabled && gAgentAutoCombat) {
+        gAgentAutoCombat = false;
+        if (gAgentOriginalAiPacket >= 0) {
+            gDude->data.critter.combat.aiPacket = gAgentOriginalAiPacket;
+            gAgentOriginalAiPacket = -1;
+        }
+        gAgentLastCommandDebug = "auto_combat: OFF";
+        debugPrint("AgentBridge: auto_combat OFF\n");
+        return AgentCommandStatus::Ok;
+    }
+
+    gAgentLastCommandDebug = std::string("auto_combat: already ") + (enabled ? "ON" : "OFF");
+    return AgentCommandStatus::NoOp;
+}
+
+static AgentCommandStatus handleConfigureCombatAiCommand(const json& cmd)
+{
+    if (!gAgentAutoCombat) {
+        gAgentLastCommandDebug = "configure_combat_ai: auto_combat not enabled";
+        return AgentCommandStatus::Blocked;
+    }
+
+    std::string configResult = "configure_combat_ai:";
+    if (cmd.contains("attack_who") && cmd["attack_who"].is_string()) {
+        std::string val = cmd["attack_who"].get<std::string>();
+        for (int i = 0; i < ATTACK_WHO_COUNT; i++) {
+            if (val == gAttackWhoKeys[i]) {
+                aiSetAttackWho(gDude, i);
+                configResult += " attack_who=" + val;
+                break;
+            }
+        }
+    }
+    if (cmd.contains("distance") && cmd["distance"].is_string()) {
+        std::string val = cmd["distance"].get<std::string>();
+        for (int i = 0; i < DISTANCE_COUNT; i++) {
+            if (val == gDistanceModeKeys[i]) {
+                aiSetDistance(gDude, i);
+                configResult += " distance=" + val;
+                break;
+            }
+        }
+    }
+    if (cmd.contains("best_weapon") && cmd["best_weapon"].is_string()) {
+        std::string val = cmd["best_weapon"].get<std::string>();
+        for (int i = 0; i < BEST_WEAPON_COUNT; i++) {
+            if (val == gBestWeaponKeys[i]) {
+                aiSetBestWeapon(gDude, i);
+                configResult += " best_weapon=" + val;
+                break;
+            }
+        }
+    }
+    if (cmd.contains("chem_use") && cmd["chem_use"].is_string()) {
+        std::string val = cmd["chem_use"].get<std::string>();
+        for (int i = 0; i < CHEM_USE_COUNT; i++) {
+            if (val == gChemUseKeys[i]) {
+                aiSetChemUse(gDude, i);
+                configResult += " chem_use=" + val;
+                break;
+            }
+        }
+    }
+    if (cmd.contains("run_away_mode") && cmd["run_away_mode"].is_string()) {
+        std::string val = cmd["run_away_mode"].get<std::string>();
+        for (int i = 0; i < RUN_AWAY_MODE_COUNT; i++) {
+            if (val == gRunAwayModeKeys[i]) {
+                aiSetRunAwayMode(gDude, i);
+                configResult += " run_away_mode=" + val;
+                break;
+            }
+        }
+    }
+    if (cmd.contains("area_attack_mode") && cmd["area_attack_mode"].is_string()) {
+        std::string val = cmd["area_attack_mode"].get<std::string>();
+        for (int i = 0; i < AREA_ATTACK_MODE_COUNT; i++) {
+            if (val == gAreaAttackModeKeys[i]) {
+                aiSetAreaAttackMode(gDude, i);
+                configResult += " area_attack_mode=" + val;
+                break;
+            }
+        }
+    }
+    if (cmd.contains("disposition") && cmd["disposition"].is_string()) {
+        std::string val = cmd["disposition"].get<std::string>();
+        for (int i = 0; i < DISPOSITION_COUNT; i++) {
+            if (val == gDispositionKeys[i]) {
+                aiSetDisposition(gDude, i);
+                configResult += " disposition=" + val;
+                break;
+            }
+        }
+    }
+
+    gAgentLastCommandDebug = configResult;
+    debugPrint("AgentBridge: %s\n", configResult.c_str());
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleSetTestModeCommand(const json& cmd)
+{
+    bool enabled = cmd.contains("enabled") && cmd["enabled"].is_boolean()
+        && cmd["enabled"].get<bool>();
+    gAgentTestMode = enabled;
+    gAgentLastCommandDebug = std::string("set_test_mode: ") + (enabled ? "ON" : "OFF");
+    debugPrint("AgentBridge: test mode %s\n", enabled ? "ON" : "OFF");
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus handleReadHolodisk(const json& cmd)
+{
+    if (!cmd.contains("index") || !cmd["index"].is_number_integer()) {
+        gAgentLastCommandDebug = "read_holodisk: missing 'index'";
+        gAgentQueryResult = json::object({ { "type", "read_holodisk" }, { "error", "missing 'index'" } });
+        return AgentCommandStatus::BadArgs;
+    }
+
+    int index = cmd["index"].get<int>();
+    int holodiskCount = agentGetHolodiskCount();
+
+    if (index < 0 || index >= holodiskCount) {
+        gAgentLastCommandDebug = "read_holodisk: index out of range (0-" + std::to_string(holodiskCount - 1) + ")";
+        gAgentQueryResult = json::object({ { "type", "read_holodisk" }, { "error", gAgentLastCommandDebug } });
+        return AgentCommandStatus::BadArgs;
+    }
+
+    // Check if the player has acquired this holodisk
+    int gvar = agentGetHolodiskGvar(index);
+    if (gameGetGlobalVar(gvar) == 0) {
+        gAgentLastCommandDebug = "read_holodisk: holodisk not acquired";
+        gAgentQueryResult = json::object({ { "type", "read_holodisk" }, { "error", "not acquired" } });
+        return AgentCommandStatus::Failed;
+    }
+
+    const char* name = agentGetHolodiskName(index);
+    std::string fullText = agentGetHolodiskFullText(index);
+
+    json query = json::object();
+    query["type"] = "read_holodisk";
+    query["index"] = index;
+    query["name"] = safeString(name);
+    query["text"] = safeString(fullText.c_str());
+    gAgentQueryResult = query;
+
+    gAgentLastCommandDebug = "read_holodisk: " + std::string(name ? name : "?") + " (" + std::to_string(fullText.size()) + " chars)";
+    debugPrint("AgentBridge: %s\n", gAgentLastCommandDebug.c_str());
+    return AgentCommandStatus::Ok;
+}
+
+static AgentCommandStatus dispatchMappedCommand(const std::string& type, const json& cmd)
+{
+    static const std::unordered_map<std::string, AgentCommandHandler> handlers = {
+        { "skip", handleSkipCommand },
+        { "mouse_move", handleMouseMoveCommand },
+        { "mouse_click", handleMouseClickCommand },
+        { "key_press", handleKeyPressCommand },
+        { "key_release", handleKeyReleaseCommand },
+        { "adjust_stat", handleAdjustStat },
+        { "toggle_trait", handleToggleTrait },
+        { "toggle_skill_tag", handleToggleSkillTag },
+        { "set_name", handleSetName },
+        { "editor_done", handleFinishCharacterCreationCommand },
+        { "finish_character_creation", handleFinishCharacterCreationCommand },
+        { "main_menu", handleMainMenuCommand },
+        { "main_menu_select", handleMainMenuSelect },
+        { "char_selector_select", handleCharSelectorSelect },
+        { "move_to", handleMoveToWalkCommand },
+        { "run_to", handleMoveToRunCommand },
+        { "use_object", handleUseObject },
+        { "open_door", handleOpenDoor },
+        { "pick_up", handlePickUp },
+        { "use_skill", handleUseSkill },
+        { "talk_to", handleTalkTo },
+        { "use_item_on", handleUseItemOn },
+        { "look_at", handleLookAt },
+        { "reload_weapon", handleReloadWeapon },
+        { "reload_weapon_with", handleReloadWeapon },
+        { "drop_item", handleDropItem },
+        { "give_item", handleGiveItem },
+        { "equip_item", handleEquipItem },
+        { "unequip_item", handleUnequipItem },
+        { "use_item", handleUseItem },
+        { "use_equipped_item", handleUseEquippedItem },
+        { "attack", handleAttack },
+        { "combat_move", handleCombatMove },
+        { "end_turn", handleEndTurnCommand },
+        { "use_combat_item", handleUseCombatItem },
+        { "skill_add", handleSkillAdd },
+        { "skill_sub", handleSkillSub },
+        { "perk_add", handlePerkAdd },
+        { "select_dialogue", handleSelectDialogue },
+        { "open_container", handleOpenContainer },
+        { "loot_take", handleLootTake },
+        { "loot_take_all", handleLootTakeAllCommand },
+        { "loot_close", handleLootCloseCommand },
+        { "barter_offer", handleBarterOffer },
+        { "barter_remove_offer", handleBarterRemoveOffer },
+        { "barter_request", handleBarterRequest },
+        { "barter_remove_request", handleBarterRemoveRequest },
+        { "barter_confirm", handleBarterConfirmCommand },
+        { "barter_talk", handleBarterTalkCommand },
+        { "barter_cancel", handleBarterCancelCommand },
+        { "worldmap_travel", handleWorldmapTravel },
+        { "worldmap_enter_location", handleWorldmapEnterLocation },
+        { "find_path", handleFindPath },
+        { "tile_objects", handleTileObjects },
+        { "find_item", handleFindItem },
+        { "list_all_items", handleListAllItems },
+        { "map_transition", handleMapTransition },
+        { "teleport", handleTeleport },
+        { "switch_hand", handleSwitchHandCommand },
+        { "cycle_attack_mode", handleCycleAttackModeCommand },
+        { "force_idle", handleForceIdleCommand },
+        { "force_end_combat", handleForceEndCombatCommand },
+        { "detonate_at", handleDetonateAtCommand },
+        { "nudge", handleNudgeCommand },
+        { "center_camera", handleCenterCameraCommand },
+        { "rest", handleRestCommand },
+        { "pip_boy", handlePipBoyCommand },
+        { "character_screen", handleCharacterScreenCommand },
+        { "inventory_open", handleInventoryOpenCommand },
+        { "skilldex", handleSkilldexCommand },
+        { "toggle_sneak", handleToggleSneakCommand },
+        { "enter_combat", handleEnterCombatCommand },
+        { "flee_combat", handleFleeCombatCommand },
+        { "quicksave", handleQuicksaveCommand },
+        { "quickload", handleQuickloadCommand },
+        { "save_slot", handleSaveSlotCommand },
+        { "load_slot", handleLoadSlotCommand },
+        { "input_event", handleInputEventCommand },
+        { "float_thought", handleFloatThoughtCommand },
+        { "set_status", handleSetStatusCommand },
+        { "clear_status", handleClearStatusCommand },
+        { "auto_combat", handleAutoCombatCommand },
+        { "configure_combat_ai", handleConfigureCombatAiCommand },
+        { "set_test_mode", handleSetTestModeCommand },
+        { "read_holodisk", handleReadHolodisk },
+    };
+
+    auto it = handlers.find(type);
+    if (it == handlers.end()) {
+        return AgentCommandStatus::UnknownCommand;
+    }
+
+    return it->second(cmd);
+}
+
+static void trackAndLogCommandResult(const std::string& type, const json& cmd, AgentCommandStatus status)
+{
+    if (agentCommandStatusIsFailure(status)) {
+        gCommandFailureCounts[type]++;
+    } else {
+        gCommandFailureCounts.erase(type);
+    }
+
+    agentDebugLogCommand(type, cmd, gAgentLastCommandDebug, status);
 }
 
 // --- Command processing ---
@@ -2683,10 +3553,6 @@ void processCommands()
         return;
     }
 
-    // Reset query payload only when a new command batch is processed.
-    // This keeps query_result readable across idle ticks after a query command.
-    gAgentQueryResult = nullptr;
-
     // Process all commands in order
     for (const auto& cmd : doc["commands"]) {
         if (!cmd.contains("type") || !cmd["type"].is_string())
@@ -2698,619 +3564,13 @@ void processCommands()
             agentHideStatusOverlay();
         }
 
-        // Skip command — works during movies by injecting an input event
-        if (type == "skip") {
-            enqueueInputEvent(KEY_ESCAPE);
-            gAgentLastCommandDebug = "skip";
-            debugPrint("AgentBridge: skip (injected escape event)\n");
-        }
-        // Main menu action — directly sets the menu result
-        else if (type == "main_menu") {
-            if (cmd.contains("action") && cmd["action"].is_string()) {
-                std::string action = cmd["action"].get<std::string>();
-                if (action == "new_game") gAgentMainMenuAction = 1;
-                else if (action == "load_game") {
-                    gAgentMainMenuAction = 2;
-                    // Optional: specify a slot to bypass the load dialog entirely
-                    if (cmd.contains("slot") && cmd["slot"].is_number_integer()) {
-                        gAgentPendingLoadSlot = cmd["slot"].get<int>();
-                    }
-                }
-                else if (action == "options") gAgentMainMenuAction = 3;
-                else if (action == "exit") gAgentMainMenuAction = 4;
-                gAgentLastCommandDebug = "main_menu: " + action;
-                debugPrint("AgentBridge: main_menu action=%s\n", action.c_str());
-            }
-        }
-        // Input injection
-        else if (type == "mouse_move") {
-            if (cmd.contains("x") && cmd.contains("y")) {
-                int x = cmd["x"].get<int>();
-                int y = cmd["y"].get<int>();
-                _mouse_set_position(x, y);
-            }
-        } else if (type == "mouse_click") {
-            if (cmd.contains("x") && cmd.contains("y")) {
-                int x = cmd["x"].get<int>();
-                int y = cmd["y"].get<int>();
-                _mouse_set_position(x, y);
-
-                int buttons = MOUSE_STATE_LEFT_BUTTON_DOWN;
-                if (cmd.contains("button") && cmd["button"].is_string()) {
-                    std::string button = cmd["button"].get<std::string>();
-                    if (button == "right") {
-                        buttons = MOUSE_STATE_RIGHT_BUTTON_DOWN;
-                    }
-                }
-
-                _mouse_simulate_input(0, 0, buttons);
-                _mouse_simulate_input(0, 0, 0);
-            }
-        } else if (type == "key_press") {
-            if (cmd.contains("key") && cmd["key"].is_string()) {
-                std::string keyName = cmd["key"].get<std::string>();
-                auto it = gKeyNameToScancode.find(keyName);
-                if (it != gKeyNameToScancode.end()) {
-                    KeyboardData data;
-                    data.key = it->second;
-                    data.down = 1;
-                    _kb_simulate_key(&data);
-                } else {
-                    debugPrint("AgentBridge: unknown key '%s'\n", keyName.c_str());
-                }
-            }
-        } else if (type == "key_release") {
-            if (cmd.contains("key") && cmd["key"].is_string()) {
-                std::string keyName = cmd["key"].get<std::string>();
-                auto it = gKeyNameToScancode.find(keyName);
-                if (it != gKeyNameToScancode.end()) {
-                    KeyboardData data;
-                    data.key = it->second;
-                    data.down = 0;
-                    _kb_simulate_key(&data);
-                } else {
-                    debugPrint("AgentBridge: unknown key '%s'\n", keyName.c_str());
-                }
-            }
-        }
-        // Character editor commands
-        else if (type == "adjust_stat") {
-            handleAdjustStat(cmd);
-        } else if (type == "toggle_trait") {
-            handleToggleTrait(cmd);
-        } else if (type == "toggle_skill_tag") {
-            handleToggleSkillTag(cmd);
-        } else if (type == "set_name") {
-            handleSetName(cmd);
-        } else if (type == "editor_done" || type == "finish_character_creation") {
-            handleFinishCharacterCreation();
-        }
-        // Menu commands
-        else if (type == "main_menu_select") {
-            handleMainMenuSelect(cmd);
-        } else if (type == "char_selector_select") {
-            handleCharSelectorSelect(cmd);
-        }
-        // Exploration commands
-        else if (type == "move_to") {
-            handleMoveTo(cmd, false);
-        } else if (type == "run_to") {
-            handleMoveTo(cmd, true);
-        } else if (type == "use_object") {
-            handleUseObject(cmd);
-        } else if (type == "open_door") {
-            handleOpenDoor(cmd);
-        } else if (type == "pick_up") {
-            handlePickUp(cmd);
-        } else if (type == "use_skill") {
-            handleUseSkill(cmd);
-        } else if (type == "talk_to") {
-            handleTalkTo(cmd);
-        } else if (type == "use_item_on") {
-            handleUseItemOn(cmd);
-        } else if (type == "look_at") {
-            handleLookAt(cmd);
-        }
-        // Interface commands
-        else if (type == "switch_hand") {
-            interfaceBarSwapHands(true);
-            gAgentLastCommandDebug = "switch_hand: now hand " + std::to_string(interfaceGetCurrentHand());
-            debugPrint("AgentBridge: switch_hand (now hand %d)\n", interfaceGetCurrentHand());
-        } else if (type == "cycle_attack_mode") {
-            interfaceCycleItemAction();
-            gAgentLastCommandDebug = "cycle_attack_mode";
-            debugPrint("AgentBridge: cycle_attack_mode\n");
-        } else if (type == "force_idle") {
-            // Reset stuck animation state — use when animation_busy deadlocks
-            reg_anim_clear(gDude);
-            gAgentLastCommandDebug = "force_idle: animation cleared";
-            debugPrint("AgentBridge: force_idle — animation state reset\n");
-        } else if (type == "force_end_combat") {
-            if (!gAgentTestMode) {
-                gAgentLastCommandDebug = "force_end_combat: BLOCKED — test mode disabled";
-            } else if (!isInCombat()) {
-                gAgentLastCommandDebug = "force_end_combat: not in combat";
-            } else {
-                _combat_over_from_load();
-                gAgentLastCommandDebug = "force_end_combat: combat ended";
-                debugPrint("AgentBridge: force_end_combat — combat forcefully ended\n");
-            }
-        } else if (type == "detonate_at") {
-            if (!gAgentTestMode) {
-                gAgentLastCommandDebug = "detonate_at: BLOCKED — test mode disabled";
-            } else if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
-                gAgentLastCommandDebug = "detonate_at: missing 'tile'";
-            } else {
-                int tile = cmd["tile"].get<int>();
-                int elevation = gDude->elevation;
-
-                // Get damage from explosive PID (default: Plastic Explosives pid=85)
-                int pid = 85; // 0x00000055 = Plastic Explosives
-                if (cmd.contains("pid") && cmd["pid"].is_number_integer()) {
-                    pid = cmd["pid"].get<int>();
-                }
-
-                int minDamage = 40;
-                int maxDamage = 80;
-                explosiveGetDamage(pid, &minDamage, &maxDamage);
-
-                int radius = weaponGetRocketExplosionRadius(nullptr);
-
-                // Trigger the explosion (non-animated for synchronous execution)
-                // animate=false ensures _combat_explode_scenery runs immediately
-                // rather than being deferred as an animation callback
-                int rc = actionExplode(tile, elevation, minDamage, maxDamage, gDude, false);
-
-                // Also call scenery explosion directly as belt-and-suspenders
-                _scr_explode_scenery(gDude, tile, radius, elevation);
-
-                char buf[128];
-                snprintf(buf, sizeof(buf), "detonate_at: tile=%d dmg=%d-%d radius=%d",
-                    tile, minDamage, maxDamage, radius);
-                gAgentLastCommandDebug = buf;
-                debugPrint("AgentBridge: %s\n", buf);
-            }
-        } else if (type == "nudge") {
-            if (!gAgentTestMode) {
-                gAgentLastCommandDebug = "nudge: BLOCKED — test mode disabled";
-            } else if (!cmd.contains("tile") || !cmd["tile"].is_number_integer()) {
-                gAgentLastCommandDebug = "nudge: missing 'tile'";
-            } else {
-                int tile = cmd["tile"].get<int>();
-                int dist = tileDistanceBetween(gDude->tile, tile);
-                if (dist > 1) {
-                    gAgentLastCommandDebug = "nudge: too far (dist=" + std::to_string(dist) + ", max=1)";
-                } else {
-                    reg_anim_clear(gDude);
-                    Rect rect;
-                    int oldTile = gDude->tile;
-                    objectSetLocation(gDude, tile, gDude->elevation, &rect);
-                    tileSetCenter(tile, TILE_SET_CENTER_REFRESH_WINDOW);
-                    if (isInCombat() && gDude->data.critter.combat.ap > 0) {
-                        gDude->data.critter.combat.ap -= 1;
-                    }
-                    gAgentLastCommandDebug = "nudge: " + std::to_string(oldTile) + " -> " + std::to_string(tile);
-                }
-            }
-        } else if (type == "center_camera") {
-            tileSetCenter(gDude->tile, TILE_SET_CENTER_REFRESH_WINDOW);
-            gAgentLastCommandDebug = "center_camera: tile=" + std::to_string(gDude->tile);
-            debugPrint("AgentBridge: center_camera on tile %d\n", gDude->tile);
-        } else if (type == "rest") {
-            // Headless rest: incremental time advancement with event processing
-            if (isInCombat()) {
-                gAgentLastCommandDebug = "rest: cannot rest in combat";
-            } else if (!_critter_can_obj_dude_rest()) {
-                gAgentLastCommandDebug = "rest: cannot rest here (hostile critters or location)";
-            } else {
-                int hours = 1;
-                if (cmd.contains("hours") && cmd["hours"].is_number_integer()) {
-                    hours = cmd["hours"].get<int>();
-                    if (hours < 1) hours = 1;
-                    if (hours > 24) hours = 24;
-                }
-                bool interrupted = agentRest(hours, 0);
-                int hp = critterGetHitPoints(gDude);
-                int maxHp = critterGetStat(gDude, STAT_MAXIMUM_HIT_POINTS);
-                char buf[128];
-                snprintf(buf, sizeof(buf), "rest: %d hours%s hp=%d/%d",
-                    hours, interrupted ? " (interrupted)" : "", hp, maxHp);
-                gAgentLastCommandDebug = buf;
-                debugPrint("AgentBridge: %s\n", buf);
-            }
-        } else if (type == "pip_boy") {
-            enqueueInputEvent('p');
-            gAgentLastCommandDebug = "pip_boy";
-            debugPrint("AgentBridge: pip_boy (injected 'p')\n");
-        } else if (type == "character_screen") {
-            enqueueInputEvent('c');
-            gAgentLastCommandDebug = "character_screen";
-            debugPrint("AgentBridge: character_screen (injected 'c')\n");
-        } else if (type == "inventory_open") {
-            enqueueInputEvent('i');
-            gAgentLastCommandDebug = "inventory_open";
-            debugPrint("AgentBridge: inventory_open (injected 'i')\n");
-        } else if (type == "skilldex") {
-            enqueueInputEvent('s');
-            gAgentLastCommandDebug = "skilldex";
-            debugPrint("AgentBridge: skilldex (injected 's')\n");
-        } else if (type == "toggle_sneak") {
-            dudeToggleState(DUDE_STATE_SNEAKING);
-            bool sneaking = dudeHasState(DUDE_STATE_SNEAKING);
-            gAgentLastCommandDebug = std::string("toggle_sneak: now ") + (sneaking ? "sneaking" : "not sneaking");
-            debugPrint("AgentBridge: toggle_sneak → %s\n", sneaking ? "on" : "off");
-        }
-        // Inventory commands
-        else if (type == "reload_weapon" || type == "reload_weapon_with") {
-            handleReloadWeapon(cmd);
-        } else if (type == "drop_item") {
-            handleDropItem(cmd);
-        } else if (type == "give_item") {
-            handleGiveItem(cmd);
-        } else if (type == "equip_item") {
-            handleEquipItem(cmd);
-        } else if (type == "unequip_item") {
-            handleUnequipItem(cmd);
-        } else if (type == "use_item") {
-            handleUseItem(cmd);
-        } else if (type == "use_equipped_item") {
-            handleUseEquippedItem(cmd);
-        }
-        // Combat commands
-        else if (type == "attack") {
-            handleAttack(cmd);
-        } else if (type == "combat_move") {
-            handleCombatMove(cmd);
-        } else if (type == "end_turn") {
-            handleEndTurn();
-        } else if (type == "use_combat_item") {
-            handleUseCombatItem(cmd);
-        } else if (type == "enter_combat") {
-            // 'A' key initiates combat from exploration mode
-            if (isInCombat()) {
-                gAgentLastCommandDebug = "enter_combat: already in combat";
-            } else {
-                enqueueInputEvent('a');
-                gAgentLastCommandDebug = "enter_combat: initiated";
-            }
-        } else if (type == "flee_combat") {
-            // Enter key attempts to end combat (flee) — only works if enemies agree
-            if (!isInCombat()) {
-                gAgentLastCommandDebug = "flee_combat: not in combat";
-            } else {
-                enqueueInputEvent(KEY_RETURN);
-                gAgentLastCommandDebug = "flee_combat: attempted";
-            }
-        }
-        // Level-up commands
-        else if (type == "skill_add") {
-            handleSkillAdd(cmd);
-        } else if (type == "skill_sub") {
-            handleSkillSub(cmd);
-        } else if (type == "perk_add") {
-            handlePerkAdd(cmd);
-        }
-        // Dialogue commands
-        else if (type == "select_dialogue") {
-            handleSelectDialogue(cmd);
-        }
-        // Container interaction
-        else if (type == "open_container") {
-            handleOpenContainer(cmd);
-        }
-        // Loot/container commands
-        else if (type == "loot_take") {
-            handleLootTake(cmd);
-        } else if (type == "loot_take_all") {
-            handleLootTakeAll();
-        } else if (type == "loot_close") {
-            handleLootClose();
-        }
-        // Barter commands
-        else if (type == "barter_offer") {
-            handleBarterOffer(cmd);
-        } else if (type == "barter_remove_offer") {
-            handleBarterRemoveOffer(cmd);
-        } else if (type == "barter_request") {
-            handleBarterRequest(cmd);
-        } else if (type == "barter_remove_request") {
-            handleBarterRemoveRequest(cmd);
-        } else if (type == "barter_confirm") {
-            Object* ptbl = agentGetBarterPlayerTable();
-            Object* mtbl = agentGetBarterMerchantTable();
-            if (ptbl == nullptr || mtbl == nullptr || gGameDialogSpeaker == nullptr) {
-                gAgentLastCommandDebug = "barter_confirm: not in barter";
-            } else {
-                int pitems = ptbl->data.inventory.length;
-                int mitems = mtbl->data.inventory.length;
-                if (pitems == 0 && mitems == 0) {
-                    gAgentLastCommandDebug = "barter_confirm: nothing on tables";
-                } else {
-                    // Use the engine's native barter transaction path (same as pressing 'M').
-                    // inventory.cc handles all validation, pricing, messaging, and side effects.
-                    enqueueInputEvent('m');
-                    gAgentLastCommandDebug = "barter_confirm: attempted (injected 'm')";
-                    debugPrint("AgentBridge: barter_confirm (injected 'm', pitems=%d mitems=%d)\n",
-                        pitems, mitems);
-                }
-            }
-        } else if (type == "barter_talk") {
-            enqueueInputEvent('t');
-            gAgentLastCommandDebug = "barter_talk";
-            debugPrint("AgentBridge: barter_talk (injected 't')\n");
-        } else if (type == "barter_cancel") {
-            enqueueInputEvent(KEY_ESCAPE);
-            gAgentLastCommandDebug = "barter_cancel";
-            debugPrint("AgentBridge: barter_cancel (injected escape)\n");
-        }
-        // World map commands
-        else if (type == "worldmap_travel") {
-            handleWorldmapTravel(cmd);
-        } else if (type == "worldmap_enter_location") {
-            handleWorldmapEnterLocation(cmd);
-        }
-        // Pathfinding queries
-        else if (type == "find_path") {
-            handleFindPath(cmd);
-        } else if (type == "tile_objects") {
-            handleTileObjects(cmd);
-        } else if (type == "find_item") {
-            handleFindItem(cmd);
-        } else if (type == "list_all_items") {
-            handleListAllItems(cmd);
-        } else if (type == "map_transition") {
-            handleMapTransition(cmd);
-        } else if (type == "teleport") {
-            handleTeleport(cmd);
-        }
-        // Game management commands
-        else if (type == "quicksave") {
-            if (gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
-                gAgentLastCommandDebug = "quicksave: not in gameplay context";
-                debugPrint("AgentBridge: quicksave — not in gameplay context\n");
-            } else {
-                std::string desc = "Agent Save";
-                if (cmd.contains("description") && cmd["description"].is_string()) {
-                    desc = cmd["description"].get<std::string>();
-                }
-                int rc = agentQuickSave(desc.c_str());
-                gAgentLastCommandDebug = "quicksave: rc=" + std::to_string(rc) + " desc=" + desc;
-                debugPrint("AgentBridge: quicksave result=%d\n", rc);
-            }
-        } else if (type == "quickload") {
-            if (gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
-                gAgentLastCommandDebug = "quickload: not in gameplay context";
-                debugPrint("AgentBridge: quickload — not in gameplay, ignoring\n");
-            } else {
-                int rc = agentQuickLoad();
-                gAgentLastCommandDebug = "quickload: rc=" + std::to_string(rc);
-                debugPrint("AgentBridge: quickload result=%d\n", rc);
-            }
-        } else if (type == "save_slot") {
-            if (gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
-                gAgentLastCommandDebug = "save_slot: not in gameplay context";
-            } else {
-                int slot = 0;
-                if (cmd.contains("slot") && cmd["slot"].is_number_integer()) {
-                    slot = cmd["slot"].get<int>();
-                }
-                std::string desc = "Agent Save";
-                if (cmd.contains("description") && cmd["description"].is_string()) {
-                    desc = cmd["description"].get<std::string>();
-                }
-                int rc = agentSaveToSlot(slot, desc.c_str());
-                gAgentLastCommandDebug = "save_slot: slot=" + std::to_string(slot) + " rc=" + std::to_string(rc) + " desc=" + desc;
-                debugPrint("AgentBridge: save_slot slot=%d result=%d\n", slot, rc);
-            }
-        } else if (type == "load_slot") {
-            if (gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
-                gAgentLastCommandDebug = "load_slot: not in gameplay context";
-            } else {
-                int slot = 0;
-                if (cmd.contains("slot") && cmd["slot"].is_number_integer()) {
-                    slot = cmd["slot"].get<int>();
-                }
-                int rc = agentLoadFromSlot(slot);
-                gAgentLastCommandDebug = "load_slot: slot=" + std::to_string(slot) + " rc=" + std::to_string(rc);
-                debugPrint("AgentBridge: load_slot slot=%d result=%d\n", slot, rc);
-            }
-        } else if (type == "input_event") {
-            if (cmd.contains("key_code") && cmd["key_code"].is_number_integer()) {
-                int keyCode = cmd["key_code"].get<int>();
-                enqueueInputEvent(keyCode);
-                gAgentLastCommandDebug = "input_event: code=" + std::to_string(keyCode);
-                debugPrint("AgentBridge: input_event code=%d\n", keyCode);
-            }
-        }
-        // Float thought text above player's head (or overlay window during dialogue)
-        else if (type == "float_thought") {
-            if (cmd.contains("text") && cmd["text"].is_string()) {
-                std::string text = cmd["text"].get<std::string>();
-                if (!text.empty() && gDude != nullptr) {
-                    const char* ctx = detectContext();
-                    if (ctx != nullptr && strcmp(ctx, "gameplay_dialogue") == 0) {
-                        // During dialogue, render to overlay window on top of dialogue UI
-                        renderDialogueOverlay(text.c_str());
-                        gAgentLastCommandDebug = "float_thought(overlay): " + text.substr(0, 40);
-                    } else {
-                        // Normal gameplay: tile-based text object above player
-                        agentHideDialogueOverlay();
-                        // Remove previous text objects to prevent ghost text trailing behind on movement
-                        textObjectsRemoveByOwner(gDude);
-                        Rect rect;
-                        char* buf = strdup(text.c_str());
-                        if (textObjectAdd(gDude, buf, 101, _colorTable[28106], _colorTable[0], &rect) == 0) {
-                            tileWindowRefreshRect(&rect, gElevation);
-                        }
-                        free(buf);
-                        gAgentLastCommandDebug = "float_thought: " + text.substr(0, 40);
-                    }
-                } else {
-                    gAgentLastCommandDebug = "float_thought: empty text or no player";
-                }
-            } else {
-                gAgentLastCommandDebug = "float_thought: missing text field";
-            }
-        }
-        else if (type == "set_status") {
-            std::string text = cmd.value("text", "");
-            if (!text.empty()) {
-                agentShowStatusOverlay(text.c_str());
-                gAgentLastCommandDebug = "set_status: " + text;
-            }
-        }
-        else if (type == "clear_status") {
-            agentHideStatusOverlay();
-            gAgentLastCommandDebug = "clear_status";
-        }
-        // Auto-combat: engine AI drives player's combat turns
-        else if (type == "auto_combat") {
-            bool enabled = cmd.contains("enabled") && cmd["enabled"].is_boolean()
-                && cmd["enabled"].get<bool>();
-            if (enabled && gAgentContext != AGENT_CONTEXT_GAMEPLAY) {
-                gAgentLastCommandDebug = "auto_combat: not in gameplay";
-            } else if (enabled && !gAgentAutoCombat) {
-                // Save gDude's original AI packet and assign a dedicated one
-                gAgentOriginalAiPacket = gDude->data.critter.combat.aiPacket;
-                int numPackets = combat_ai_num();
-                int dedicatedPacket = numPackets > 1 ? numPackets - 1 : 0;
-                gDude->data.critter.combat.aiPacket = dedicatedPacket;
-
-                // Configure defaults: aggressive player-like behavior
-                aiSetAttackWho(gDude, ATTACK_WHO_STRONGEST);
-                aiSetDistance(gDude, DISTANCE_CHARGE);
-                aiSetBestWeapon(gDude, BEST_WEAPON_NO_PREF);
-                aiSetChemUse(gDude, CHEM_USE_STIMS_WHEN_HURT_LOTS);
-                aiSetRunAwayMode(gDude, RUN_AWAY_MODE_NEVER);
-                aiSetAreaAttackMode(gDude, AREA_ATTACK_MODE_BE_CAREFUL);
-                aiSetDisposition(gDude, DISPOSITION_AGGRESSIVE);
-
-                gAgentAutoCombat = true;
-                gAgentLastCommandDebug = "auto_combat: ON (packet=" + std::to_string(dedicatedPacket) + ")";
-                debugPrint("AgentBridge: auto_combat ON (packet=%d, total=%d)\n", dedicatedPacket, numPackets);
-            } else if (!enabled && gAgentAutoCombat) {
-                gAgentAutoCombat = false;
-                // Restore original AI packet
-                if (gAgentOriginalAiPacket >= 0) {
-                    gDude->data.critter.combat.aiPacket = gAgentOriginalAiPacket;
-                    gAgentOriginalAiPacket = -1;
-                }
-                gAgentLastCommandDebug = "auto_combat: OFF";
-                debugPrint("AgentBridge: auto_combat OFF\n");
-            } else {
-                gAgentLastCommandDebug = std::string("auto_combat: already ") + (enabled ? "ON" : "OFF");
-            }
-        }
-        else if (type == "configure_combat_ai") {
-            if (!gAgentAutoCombat) {
-                gAgentLastCommandDebug = "configure_combat_ai: auto_combat not enabled";
-            } else {
-                std::string configResult = "configure_combat_ai:";
-                if (cmd.contains("attack_who") && cmd["attack_who"].is_string()) {
-                    std::string val = cmd["attack_who"].get<std::string>();
-                    for (int i = 0; i < ATTACK_WHO_COUNT; i++) {
-                        if (val == gAttackWhoKeys[i]) {
-                            aiSetAttackWho(gDude, i);
-                            configResult += " attack_who=" + val;
-                            break;
-                        }
-                    }
-                }
-                if (cmd.contains("distance") && cmd["distance"].is_string()) {
-                    std::string val = cmd["distance"].get<std::string>();
-                    for (int i = 0; i < DISTANCE_COUNT; i++) {
-                        if (val == gDistanceModeKeys[i]) {
-                            aiSetDistance(gDude, i);
-                            configResult += " distance=" + val;
-                            break;
-                        }
-                    }
-                }
-                if (cmd.contains("best_weapon") && cmd["best_weapon"].is_string()) {
-                    std::string val = cmd["best_weapon"].get<std::string>();
-                    for (int i = 0; i < BEST_WEAPON_COUNT; i++) {
-                        if (val == gBestWeaponKeys[i]) {
-                            aiSetBestWeapon(gDude, i);
-                            configResult += " best_weapon=" + val;
-                            break;
-                        }
-                    }
-                }
-                if (cmd.contains("chem_use") && cmd["chem_use"].is_string()) {
-                    std::string val = cmd["chem_use"].get<std::string>();
-                    for (int i = 0; i < CHEM_USE_COUNT; i++) {
-                        if (val == gChemUseKeys[i]) {
-                            aiSetChemUse(gDude, i);
-                            configResult += " chem_use=" + val;
-                            break;
-                        }
-                    }
-                }
-                if (cmd.contains("run_away_mode") && cmd["run_away_mode"].is_string()) {
-                    std::string val = cmd["run_away_mode"].get<std::string>();
-                    for (int i = 0; i < RUN_AWAY_MODE_COUNT; i++) {
-                        if (val == gRunAwayModeKeys[i]) {
-                            aiSetRunAwayMode(gDude, i);
-                            configResult += " run_away_mode=" + val;
-                            break;
-                        }
-                    }
-                }
-                if (cmd.contains("area_attack_mode") && cmd["area_attack_mode"].is_string()) {
-                    std::string val = cmd["area_attack_mode"].get<std::string>();
-                    for (int i = 0; i < AREA_ATTACK_MODE_COUNT; i++) {
-                        if (val == gAreaAttackModeKeys[i]) {
-                            aiSetAreaAttackMode(gDude, i);
-                            configResult += " area_attack_mode=" + val;
-                            break;
-                        }
-                    }
-                }
-                if (cmd.contains("disposition") && cmd["disposition"].is_string()) {
-                    std::string val = cmd["disposition"].get<std::string>();
-                    for (int i = 0; i < DISPOSITION_COUNT; i++) {
-                        if (val == gDispositionKeys[i]) {
-                            aiSetDisposition(gDude, i);
-                            configResult += " disposition=" + val;
-                            break;
-                        }
-                    }
-                }
-                gAgentLastCommandDebug = configResult;
-                debugPrint("AgentBridge: %s\n", configResult.c_str());
-            }
-        }
-        // Test mode toggle
-        else if (type == "set_test_mode") {
-            bool enabled = cmd.contains("enabled") && cmd["enabled"].is_boolean()
-                && cmd["enabled"].get<bool>();
-            gAgentTestMode = enabled;
-            gAgentLastCommandDebug = std::string("set_test_mode: ") + (enabled ? "ON" : "OFF");
-            debugPrint("AgentBridge: test mode %s\n", enabled ? "ON" : "OFF");
-        } else {
+        AgentCommandStatus status = dispatchMappedCommand(type, cmd);
+        if (status == AgentCommandStatus::UnknownCommand) {
             gAgentLastCommandDebug = "unknown_cmd: " + type;
             debugPrint("AgentBridge: unknown command type: %s\n", type.c_str());
         }
 
-        // Track consecutive command failures per command type
-        const auto& dbg = gAgentLastCommandDebug;
-        bool isFailure = dbg.find("BLOCKED") != std::string::npos
-            || dbg.find("failed") != std::string::npos
-            || dbg.find("not found") != std::string::npos
-            || dbg.find("too far") != std::string::npos
-            || dbg.find("locked") != std::string::npos
-            || dbg.find("busy") != std::string::npos
-            || dbg.find("cannot") != std::string::npos
-            || dbg.find("missing") != std::string::npos
-            || dbg.find("unknown_cmd") != std::string::npos;
-
-        if (isFailure) {
-            gCommandFailureCounts[type]++;
-        } else {
-            gCommandFailureCounts.erase(type);
-        }
-
-        agentDebugLogCommand(type, cmd, gAgentLastCommandDebug, isFailure);
+        trackAndLogCommandResult(type, cmd, status);
     }
 }
 

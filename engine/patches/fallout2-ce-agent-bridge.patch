@@ -1033,14 +1033,46 @@ index bc0bf0a..4e4e67e 100644
              if (keyCode == gMainMenuButtonKeyBindings[buttonIndex] || keyCode == toupper(gMainMenuButtonKeyBindings[buttonIndex])) {
                  // NOTE: Uninline.
 diff --git a/src/pipboy.cc b/src/pipboy.cc
-index 9327894..e169130 100644
+index 9327894..2cb2720 100644
 --- a/src/pipboy.cc
 +++ b/src/pipboy.cc
-@@ -2605,4 +2605,156 @@ static void holodiskFree()
+@@ -3,6 +3,7 @@
+ #include <ctype.h>
+ #include <stdio.h>
+ #include <string.h>
++#include <string>
+ 
+ #include "art.h"
+ #include "automap.h"
+@@ -2605,4 +2606,214 @@ static void holodiskFree()
      gHolodisksCount = 0;
  }
  
 +// --- Agent bridge accessors ---
++
++// Persistent pipboy message list (survives Pip-Boy open/close)
++static MessageList gAgentPipboyMessageList;
++static bool gAgentPipboyMessagesLoaded = false;
++
++static bool agentEnsurePipboyMessagesLoaded()
++{
++    if (gAgentPipboyMessagesLoaded)
++        return true;
++
++    if (!messageListInit(&gAgentPipboyMessageList))
++        return false;
++
++    char path[COMPAT_MAX_PATH];
++    snprintf(path, sizeof(path), "%s%s", asc_5186C8, "pipboy.msg");
++
++    if (!messageListLoad(&gAgentPipboyMessageList, path)) {
++        messageListFree(&gAgentPipboyMessageList);
++        return false;
++    }
++
++    gAgentPipboyMessagesLoaded = true;
++    return true;
++}
 +
 +int agentInitQuestData()
 +{
@@ -1126,12 +1158,46 @@ index 9327894..e169130 100644
 +const char* agentGetHolodiskName(int index)
 +{
 +    if (index < 0 || index >= gHolodisksCount) return nullptr;
++    if (!agentEnsurePipboyMessagesLoaded()) return nullptr;
 +    MessageListItem item;
 +    item.num = gHolodiskDescriptions[index].name;
-+    if (messageListGetItem(&gQuestsMessageList, &item)) {
++    if (messageListGetItem(&gAgentPipboyMessageList, &item)) {
 +        return item.text;
 +    }
 +    return nullptr;
++}
++
++std::string agentGetHolodiskFullText(int index)
++{
++    if (index < 0 || index >= gHolodisksCount)
++        return "";
++
++    if (!agentEnsurePipboyMessagesLoaded())
++        return "";
++
++    HolodiskDescription* holodisk = &gHolodiskDescriptions[index];
++    std::string result;
++
++    for (int msgId = holodisk->description; msgId < holodisk->description + 500; msgId++) {
++        MessageListItem item;
++        item.num = msgId;
++        if (!messageListGetItem(&gAgentPipboyMessageList, &item) || item.text == nullptr)
++            break;
++
++        if (strcmp(item.text, "**END-DISK**") == 0)
++            break;
++
++        if (strcmp(item.text, "**END-PAR**") == 0) {
++            result += "\n\n";
++            continue;
++        }
++
++        if (!result.empty() && result.back() != '\n')
++            result += " ";
++        result += item.text;
++    }
++
++    return result;
 +}
 +
 +// Agent bridge: headless rest (no Pip-Boy UI, but same game logic)
@@ -1194,10 +1260,19 @@ index 9327894..e169130 100644
 +
  } // namespace fallout
 diff --git a/src/pipboy.h b/src/pipboy.h
-index bd17f64..5ced60e 100644
+index bd17f64..fa9c35d 100644
 --- a/src/pipboy.h
 +++ b/src/pipboy.h
-@@ -16,6 +16,24 @@ void pipboyReset();
+@@ -1,6 +1,8 @@
+ #ifndef PIPBOY_H
+ #define PIPBOY_H
+ 
++#include <string>
++
+ #include "db.h"
+ 
+ namespace fallout {
+@@ -16,6 +18,25 @@ void pipboyReset();
  int pipboySave(File* stream);
  int pipboyLoad(File* stream);
  
@@ -1218,6 +1293,7 @@ index bd17f64..5ced60e 100644
 +int agentGetHolodiskCount();
 +int agentGetHolodiskGvar(int index);
 +const char* agentGetHolodiskName(int index);
++std::string agentGetHolodiskFullText(int index);
 +
  } // namespace fallout
  

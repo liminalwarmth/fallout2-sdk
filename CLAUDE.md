@@ -27,6 +27,12 @@ Use `note`, `recall`, `game_log` (executor functions) to make and reference note
 
 ---
 
+## Gameplay Commands
+
+Use gameplay-facing executor functions for in-game actions and observation:
+- `status`, `look_around`, `executor_help`
+- `muse`, `note`, `recall`, `game_log`
+
 ## Architecture
 
 ```
@@ -50,6 +56,16 @@ cd ../../../game && open "Fallout II Community Edition.app"
 
 Always test bridge changes in the running game: build → deploy → codesign → launch → verify JSON.
 
+## Developer Tooling
+
+Developer checks (script entry points):
+- `python3 scripts/check_state_schema.py --state game/agent_state.json`
+- `./scripts/check_bridge_source_drift.sh` (or `--sync` to mirror top-level bridge sources into engine copy)
+
+Developer checks (executor wrappers; after `source scripts/executor.sh`):
+- `schema_check`
+- `bridge_drift_check [--sync]`
+
 ## Project Layout
 
 - `engine/fallout2-ce/` — upstream engine submodule (never commit here directly)
@@ -59,7 +75,10 @@ Always test bridge changes in the running game: build → deploy → codesign �
   - `executor_world.sh` — movement (`move_and_wait`), exploration, interaction, healing, party
   - `executor_combat.sh` — `do_combat` monitoring loop (engine AI handles decisions)
   - `executor_dialogue.sh` — dialogue, persona, thought system
+  - `executor_dialogue_helpers.py` — Python helpers used by `executor_dialogue.sh` (history writes, assessment, muse prompt assembly, persona section extraction/append)
   - `executor_chargen.sh` — character creation & level-up helpers
+  - `check_state_schema.py` — validates required `agent_state.json` contracts used by hooks/executor
+  - `check_bridge_source_drift.sh` — compares top-level bridge sources with engine mirror; optional `--sync`
   - `game_state_hook.py` — PreToolUse hook: injects `[GAME]` status before Bash calls
   - `float_response.sh` — renders Claude's text as in-game floating text
 - `game/` — runtime data + JSON files (git-ignored); includes `knowledge/`, `debug/`, `persona.md`, `thought_log.md`, `objectives.md`
