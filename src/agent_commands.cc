@@ -1395,9 +1395,13 @@ static AgentCommandStatus handleReloadWeapon(const json& cmd)
     }
 
     int result = weaponReload(weapon, ammo);
+    if (result == -1) {
+        gAgentLastCommandDebug = "reload_weapon: reload failed";
+        return AgentCommandStatus::Failed;
+    }
+
     // If ammo stack is depleted, remove it from inventory
     if (result == 0) {
-        // Ammo fully consumed — remove from inventory
         itemRemove(gDude, ammo, 1);
         objectDestroy(ammo, nullptr);
     }
@@ -3383,7 +3387,10 @@ static AgentCommandStatus handleReadHolodisk(const json& cmd)
     int holodiskCount = agentGetHolodiskCount();
 
     if (index < 0 || index >= holodiskCount) {
-        gAgentLastCommandDebug = "read_holodisk: index out of range (0-" + std::to_string(holodiskCount - 1) + ")";
+        if (holodiskCount == 0)
+            gAgentLastCommandDebug = "read_holodisk: no holodisks available";
+        else
+            gAgentLastCommandDebug = "read_holodisk: index out of range (0-" + std::to_string(holodiskCount - 1) + ")";
         gAgentQueryResult = json::object({ { "type", "read_holodisk" }, { "error", gAgentLastCommandDebug } });
         return AgentCommandStatus::BadArgs;
     }
@@ -3533,6 +3540,12 @@ void processCommands()
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
+    if (size <= 0) {
+        fclose(f);
+        remove(kCmdPath);
+        return;
+    }
+
     std::string content(size, '\0');
     fread(&content[0], 1, size, f);
     fclose(f);
@@ -3552,6 +3565,9 @@ void processCommands()
         debugPrint("AgentBridge: missing 'commands' array\n");
         return;
     }
+
+    // Reset query result when a new command batch arrives
+    gAgentQueryResult = nullptr;
 
     // Process all commands in order
     for (const auto& cmd : doc["commands"]) {

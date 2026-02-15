@@ -1453,8 +1453,8 @@ static void writeDialogueState(json& state)
     }
     dialogue["options"] = options;
 
-    // Barter preview: check if NPC can barter
-    if (gGameDialogSpeaker != nullptr) {
+    // Barter preview: check if NPC can barter (critters only)
+    if (gGameDialogSpeaker != nullptr && PID_TYPE(gGameDialogSpeaker->pid) == OBJ_TYPE_CRITTER) {
         Proto* speakerProto = nullptr;
         if (protoGetProto(gGameDialogSpeaker->pid, &speakerProto) == 0 && speakerProto != nullptr) {
             bool canBarter = (speakerProto->critter.data.flags & CRITTER_BARTER) != 0;
@@ -1947,10 +1947,8 @@ static void writeGameplayState(json& state, const char* context)
         state["settings"] = s;
     }
 
-    // Can-rest status (all non-combat gameplay contexts)
-    if (strcmp(context, "gameplay_combat") != 0
-        && strcmp(context, "gameplay_combat_wait") != 0
-        && strcmp(context, "gameplay_combat_auto") != 0) {
+    // Can-rest status (general gameplay only — irrelevant during combat, dialogue, worldmap, etc.)
+    if (strcmp(context, "gameplay") == 0) {
         state["can_rest"] = _critter_can_obj_dude_rest();
     }
 

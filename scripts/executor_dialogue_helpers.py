@@ -69,11 +69,11 @@ def cmd_append_history(args: argparse.Namespace) -> int:
 
 
 def _quest_summary(q: Dict[str, Any]) -> str:
+    name = str(q.get("name", "?") or "?")
     loc = str(q.get("location", "") or "")
     desc = str(q.get("description", "") or "")
-    if loc:
-        return f"{loc} -- {desc[:60]}"
-    return desc[:80]
+    loc_str = f" ({loc})" if loc else ""
+    return f"{name}{loc_str} -- {desc[:60]}"
 
 
 def cmd_assess(args: argparse.Namespace) -> int:
@@ -230,7 +230,7 @@ def cmd_muse_prompt(args: argparse.Namespace) -> int:
     quests = state.get("quests", [])
     active = [q for q in quests if not q.get("completed", False)]
     quest_str = ", ".join(
-        str(q.get("location") or str(q.get("description", "?"))[:40]) for q in active[:5]
+        str(q.get("name") or q.get("description", "?"))[:40] for q in active[:5]
     ) if active else "none"
 
     try:

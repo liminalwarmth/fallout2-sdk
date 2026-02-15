@@ -905,6 +905,7 @@ print('; '.join(parts) if parts else 'empty area')
 
 read_holodisk() {
     local index="${1:?Usage: read_holodisk <index>  (see holodisks in state)}"
+    [[ "$index" =~ ^[0-9]+$ ]] || { echo "Error: index must be a number"; return 1; }
     cmd "{\"type\":\"read_holodisk\",\"index\":$index}"
     sleep 0.3
     wait_tick_advance 5 || true

@@ -6,12 +6,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 SRC_DIR="$ROOT/src"
 ENGINE_SRC_DIR="$ROOT/engine/fallout2-ce/src"
 
+# Only headers are duplicated — .cc files exist only in src/ and are referenced by path in CMakeLists
 FILES=(
-  agent_bridge.cc
   agent_bridge.h
   agent_bridge_internal.h
-  agent_commands.cc
-  agent_state.cc
 )
 
 SYNC=0
